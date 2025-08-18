@@ -22,3 +22,6 @@ Quickly went through the header file:
 - **Strategy.hpp** contain different algorithm we gonna use for the compress/grouping
 
 - **Worker.hpp** is the middle part between **Coordinator** and **Strategy**, it receives a *ParentBlock* from I/O, coordinates one or more strategies to compress it, and produces a list of *BlockDesc objects* ready for output.
+
+
+# Go to `compressor/docs` for UML
