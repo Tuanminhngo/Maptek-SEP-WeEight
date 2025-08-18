@@ -1,0 +1,7 @@
+*.o
+*.obj
+*.out
+*.exe
+*.a
+*.log
+*.tmp
