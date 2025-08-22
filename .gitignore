@@ -5,3 +5,4 @@
 *.a
 *.log
 *.tmp
+settings.json

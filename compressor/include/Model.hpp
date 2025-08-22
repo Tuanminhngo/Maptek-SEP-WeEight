@@ -1,7 +1,9 @@
 #ifndef MODEL_HPP
 #define MODEL_HPP
 
+#include <cassert>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -17,6 +19,7 @@ class Grid {
  private:
   int W{}, H{}, D{};
   std::vector<uint32_t> cells;
+  inline size_t idx(int x, int y, int z) const;
 
  public:
   Grid(int w, int h, int d);
@@ -66,7 +69,7 @@ class LabelTable {
  public:
   // constructor
   void add(char label, const std::string& name);
-
+  LabelTable() : labelToId(256, -1){};
   // lookup
   uint32_t getId(char label) const;
   const std::string& getName(uint32_t id) const;
