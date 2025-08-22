@@ -6,6 +6,7 @@
 
 using namespace std;
 
+#include "../algorithm.cpp"   // 
 
 namespace BlockProcessor {
     /**
@@ -51,39 +52,60 @@ namespace BlockProcessor {
             size_t commaPos = line.find(',');
             char tag = line[0];
             string label = line.substr(commaPos + 1);
+            // (optional) trim leading space: if (!label.empty() && label[0]==' ') label.erase(label.begin());
             tagTable[tag] = label;
         }
         return tagTable;
     }
 
     /**
-     * @brief Processes the block model without compression.
+     * @brief Processes the block model by parent-thick slabs and compresses each parent block.
      * @param x_count The number of blocks in the X dimension.
      * @param y_count The number of blocks in the Y dimension.
      * @param z_count The number of blocks in the Z dimension.
+     * @param parent_x Parent block size in X.
+     * @param parent_y Parent block size in Y.
+     * @param parent_z Parent block size in Z (slab thickness).
      * @param tag_table The map of tags to labels.
      */
-    void processBlocks(int x_count, int y_count, int z_count,
+    void processBlocks(int x_count, int y_count, int z_count,             // CHANGED: signature
+                       int parent_x, int parent_y, int parent_z,          // CHANGED: add parents
                        const map<char, string>& tag_table) {
-        string line;
-        for (int z = 0; z < z_count; ++z) {
-            for (int y = 0; y < y_count; ++y) {
-                getline(cin, line);
-                // Process each character in the line
-                for (int x = 0; x < x_count; ++x) {
-                    char tag = line[x];
-                    string label = tag_table.at(tag);
-                    // Output the 1x1x1 block in the required format
-                    cout << x << "," << y << "," << z << ",1,1,1," << label << "\n";
+        using Slab = std::vector<std::vector<std::string>>;
+        Slab slab(parent_z, std::vector<std::string>(y_count)); // slab[z][y] = row of length x_count
+
+        for (int z_base = 0; z_base < z_count; z_base += parent_z) {
+            // --- Read one parent-thick slab (parent_z slices) ---
+            for (int zz = 0; zz < parent_z; ++zz) {
+                int z_abs = z_base + zz;
+                for (int yy = 0; yy < y_count; ++yy) {
+                    std::string row;
+                    getline(cin, row);
+                    if ((int)row.size() < x_count) {
+                        throw std::runtime_error("Row shorter than x_count");
+                    }
+                    slab[zz][yy] = row.substr(0, x_count);
+                }
+                // consume blank line between slices, except after last global slice
+                if (z_abs < z_count - 1) {
+                    std::string blank;
+                    getline(cin, blank);
                 }
             }
-            // After each slice, there is a blank line. Read and discard it.
-            // But only if it's not the last slice to avoid an extra read.
-            if (z < z_count - 1) {
-                getline(cin, line);
+
+            // --- Compress each parent block within this slab ---
+            for (int y_base = 0; y_base < y_count; y_base += parent_y) {
+                for (int x_base = 0; x_base < x_count; x_base += parent_x) {
+                    // algorithm.cpp provides this function in namespace BlockProcessor
+                    BlockProcessor::compressParentRecursive(
+                        slab, x_base, y_base, z_base,
+                        parent_x, parent_y, parent_z,
+                        tag_table
+                    );
+                }
             }
-        }
-    }
+        } // CHANGED: add missing function-closing brace below
+    }     // CHANGED: close processBlocks properly
 } // namespace BlockProcessor
 
 int main() {
@@ -101,7 +123,9 @@ int main() {
     map<char, string> tag_table = BlockProcessor::readTagTable();
 
     // Process blocks
-    BlockProcessor::processBlocks(x_count, y_count, z_count, tag_table);
+    BlockProcessor::processBlocks(x_count, y_count, z_count,          // CHANGED: pass parents
+                                  parent_x, parent_y, parent_z,       // CHANGED
+                                  tag_table);
 
     return 0;
 }
