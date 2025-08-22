@@ -26,7 +26,7 @@ For Windows:
     ```
 - Compile c++ file:
     ```bash
-    type input.txt | stream_processor.exe > output.txt
+    type input.txt | .\stream_processor.exe > output.txt
     ```
 - Create .exe file:
     ```bash
