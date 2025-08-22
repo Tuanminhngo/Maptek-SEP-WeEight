@@ -6,3 +6,5 @@
 *.log
 *.tmp
 settings.json
+/compressor/bin/
+/compressor/tests/
