@@ -63,8 +63,9 @@ void LabelTable::add(char label, const std::string& name) {
 uint32_t LabelTable::getId(char label) const {
   unsigned int key = static_cast<unsigned char>(label);
   int mapped = labelToId[key];
-  return mapped == -1 ? static_cast<uint32_t>(-1)
-                      : static_cast<uint32_t>(mapped);
+  if (mapped == -1)
+    throw std::runtime_error(std::string("Unknown tag: '") + label + "'");
+  return static_cast<uint32_t>(mapped);
 }
 
 const std::string& LabelTable::getName(uint32_t id) const {
