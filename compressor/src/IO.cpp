@@ -109,7 +109,8 @@ void Endpoint::init() {
                                  ", y=" + std::to_string(y));
       for (int x = 0; x < W; ++x) {
         const char tag = line[x];
-        const uint32_t id = labelTable_->getId(tag);  // throws if unknown
+        const uint32_t id = labelTable_->getId(tag);  \
+        const int yy = H - 1 - y;
         mapModel_->at(x, y, z) = id;
       }
     }
