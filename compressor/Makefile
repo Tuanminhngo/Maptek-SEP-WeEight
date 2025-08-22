@@ -2,13 +2,13 @@ CXX := g++
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -Iinclude
 
 SRC := src/Model.cpp src/IO.cpp
-TESTBIN := bin/test_model_io
-TESTSRC := tests/test_model_io.cpp
+TESTBIN_FILE := bin/test_from_file
+TESTSRC_FILE := tests/test_from_file.cpp
 
-all: $(TESTBIN)
+all: $(TESTBIN_FILE)
 
-$(TESTBIN): $(SRC) $(TESTSRC) | bin
-	$(CXX) $(CXXFLAGS) -o $@ $(SRC) $(TESTSRC)
+$(TESTBIN_FILE): $(SRC) $(TESTSRC_FILE) | bin
+	$(CXX) $(CXXFLAGS) -o $@ $(SRC) $(TESTSRC_FILE)
 
 bin:
 	mkdir -p bin
@@ -16,9 +16,5 @@ bin:
 clean:
 	rm -rf bin
 
-test: $(TESTBIN)
-	$(TESTBIN)
-
-testv: CXXFLAGS += -DTEST_VERBOSE=1
-testv: $(TESTBIN)
-	$(TESTBIN)
+test-file: $(TESTBIN_FILE)
+	$(TESTBIN_FILE)
