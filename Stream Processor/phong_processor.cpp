@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <unordered_map>
 #include <sstream>
 
 using namespace std;
@@ -43,8 +44,8 @@ namespace BlockProcessor {
      * @brief Reads the tag table from standard input.
      * @return A map of tags (char) to labels (string).
      */
-    map<char, string> readTagTable() {
-        map<char, string> tagTable;
+    unordered_map<char, string> readTagTable() {
+        unordered_map<char, string> tagTable;
         string line;
 
         while (getline(cin, line) && !line.empty()) {
@@ -64,7 +65,7 @@ namespace BlockProcessor {
      * @param tag_table The map of tags to labels.
      */
     void processBlocks(int x_count, int y_count, int z_count,
-                       const map<char, string>& tag_table) {
+                       const unordered_map<char, string>& tag_table) {
         string line;
         for (int z = 0; z < z_count; ++z) {
             for (int y = 0; y < y_count; ++y) {
@@ -98,7 +99,7 @@ int main() {
     BlockProcessor::readHeader(x_count, y_count, z_count, parent_x, parent_y, parent_z);
 
     // Read tag table
-    map<char, string> tag_table = BlockProcessor::readTagTable();
+    unordered_map<char, string> tag_table = BlockProcessor::readTagTable();
 
     // Process blocks
     BlockProcessor::processBlocks(x_count, y_count, z_count, tag_table);
