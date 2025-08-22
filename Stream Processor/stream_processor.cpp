@@ -6,7 +6,8 @@
 
 using namespace std;
 
-#include "../algorithm.cpp"   // 
+// Use the optimized tiler implementation
+#include "../algorithm_v2.cpp"   
 
 namespace BlockProcessor {
     /**
@@ -68,8 +69,8 @@ namespace BlockProcessor {
      * @param parent_z Parent block size in Z (slab thickness).
      * @param tag_table The map of tags to labels.
      */
-    void processBlocks(int x_count, int y_count, int z_count,             // CHANGED: signature
-                       int parent_x, int parent_y, int parent_z,          // CHANGED: add parents
+    void processBlocks(int x_count, int y_count, int z_count,
+                       int parent_x, int parent_y, int parent_z,
                        const map<char, string>& tag_table) {
         using Slab = std::vector<std::vector<std::string>>;
         Slab slab(parent_z, std::vector<std::string>(y_count)); // slab[z][y] = row of length x_count
@@ -96,16 +97,16 @@ namespace BlockProcessor {
             // --- Compress each parent block within this slab ---
             for (int y_base = 0; y_base < y_count; y_base += parent_y) {
                 for (int x_base = 0; x_base < x_count; x_base += parent_x) {
-                    // algorithm.cpp provides this function in namespace BlockProcessor
-                    BlockProcessor::compressParentRecursive(
+                    // call optimized tiler/stacker
+                    BlockProcessor::compressParentTiled(
                         slab, x_base, y_base, z_base,
                         parent_x, parent_y, parent_z,
                         tag_table
                     );
                 }
             }
-        } // CHANGED: add missing function-closing brace below
-    }     // CHANGED: close processBlocks properly
+        }
+    }
 } // namespace BlockProcessor
 
 int main() {
@@ -123,8 +124,8 @@ int main() {
     map<char, string> tag_table = BlockProcessor::readTagTable();
 
     // Process blocks
-    BlockProcessor::processBlocks(x_count, y_count, z_count,          // CHANGED: pass parents
-                                  parent_x, parent_y, parent_z,       // CHANGED
+    BlockProcessor::processBlocks(x_count, y_count, z_count,
+                                  parent_x, parent_y, parent_z,
                                   tag_table);
 
     return 0;
