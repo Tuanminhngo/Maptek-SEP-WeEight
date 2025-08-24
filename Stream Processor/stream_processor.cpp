@@ -101,7 +101,7 @@ namespace BlockProcessor {
                     BlockProcessor::compressParentTiled(
                         slab, x_base, y_base, z_base,
                         parent_x, parent_y, parent_z,
-                        tag_table
+                        // tag_table
                     );
                 }
             }
