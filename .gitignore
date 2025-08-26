@@ -6,3 +6,4 @@
 *.log
 *.tmp
 /compressor/bin/
+.vscode/settings.json
