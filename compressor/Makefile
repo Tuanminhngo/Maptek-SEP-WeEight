@@ -6,7 +6,6 @@ SRC := src/Model.cpp src/IO.cpp src/Strategy.cpp
 TESTBIN_FILE := bin/test_from_file
 TESTSRC_FILE := tests/test_from_file.cpp
 
-# new strategy test
 TESTBIN_STRAT := bin/test_strategy
 TESTSRC_STRAT := tests/test_strategy.cpp
 

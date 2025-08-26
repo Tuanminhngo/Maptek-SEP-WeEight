@@ -6,4 +6,3 @@
 *.log
 *.tmp
 /compressor/bin/
-/compressor/tests/
