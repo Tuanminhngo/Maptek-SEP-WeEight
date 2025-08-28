@@ -37,9 +37,9 @@ static void print_blocks_csv(const std::vector<BlockDesc>& blocks,
 int main() {
   try {
     // Load file content
-    std::ifstream f("tests/test.txt");
+    std::ifstream f("tests/input.txt");
     if (!f) {
-      std::cerr << "[FAIL] tests/test.txt not found\n";
+      std::cerr << "[FAIL] tests/input.txt not found\n";
       return 1;
     }
     std::ostringstream raw;
