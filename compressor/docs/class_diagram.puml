@@ -1,0 +1,91 @@
+@startuml
+skinparam classAttributeIconSize 0
+title include/
+
+package App {
+  class Coordinator {
+    - io: IO::Endpoint
+    - worker: Worker::DirectWorker
+    - config: App::Config
+    + run(): void
+  }
+  class Config {
+    + parentX: int
+    + parentY: int
+    + parentZ: int
+    + strategyName: string
+  }
+}
+
+package IO {
+  class Endpoint {
+    - labelTable: Model::LabelTable
+    + init(): void
+    + hasNextParent(): bool
+    + nextParent(): Model::ParentBlock
+    + write(blocks: vector<Model::BlockDesc>): void
+    + labels(): const Model::LabelTable&
+  }
+}
+
+package Model {
+  class Grid {
+    + width(): int
+    + height(): int
+    + depth(): int
+    + at(x:int,y:int,z:int): uint32_t
+  }
+  class ParentBlock {
+    + originX(): int
+    + originY(): int
+    + originZ(): int
+    + sizeX(): int
+    + sizeY(): int
+    + sizeZ(): int
+    + grid(): Grid&
+  }
+  class LabelTable {
+    + idOf(tag: char): uint32_t
+    + nameOf(id: uint32_t): string
+    + size(): size_t
+  }
+  class BlockDesc {
+    + x: int
+    + y: int
+    + z: int
+    + dx: int
+    + dy: int
+    + dz: int
+    + labelId: uint32_t
+  }
+}
+
+package Worker {
+  interface WorkerBackend {
+    + process(p: Model::ParentBlock, lt: const Model::LabelTable&): vector<Model::BlockDesc>
+  }
+  class DirectWorker implements WorkerBackend {
+    - strategy: Strategy::GroupingStrategy
+    + process(p: Model::ParentBlock, lt: const Model::LabelTable&): vector<Model::BlockDesc>
+  }
+}
+
+package Strategy {
+  interface GroupingStrategy {
+    + cover(p: Model::ParentBlock, labelId: uint32_t): vector<Model::BlockDesc>
+  }
+  class DefaultStrat implements GroupingStrategy
+}
+
+' Ownership/composition
+Model::ParentBlock *-- Model::Grid
+App::Coordinator *-- IO::Endpoint
+App::Coordinator *-- Worker::DirectWorker
+Worker::DirectWorker *-- Strategy::GroupingStrategy
+IO::Endpoint *-- Model::LabelTable
+
+
+' Realizations
+Worker::WorkerBackend <|.. Worker::DirectWorker
+Strategy::GroupingStrategy <|.. Strategy::DefaultStrat
+@enduml

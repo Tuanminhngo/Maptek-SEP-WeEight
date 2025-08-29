@@ -1,0 +1,23 @@
+@startuml
+title Sample flow
+actor User
+participant "App::Coordinator" as C
+participant "IO::Endpoint" as IO
+participant "Worker::DirectWorker" as W
+participant "Strategy::DefaultStrat" as S
+
+User -> C: run()
+C -> IO: init()
+loop while IO.hasNextParent()
+  C -> IO: nextParent()
+  IO --> C: Model::ParentBlock
+  C -> W: process(ParentBlock, IO.labels())
+  loop for each labelId present
+    W -> S: cover(ParentBlock, labelId)
+    S --> W: [Model::BlockDesc...]
+  end
+  W --> C: [Model::BlockDesc...]
+  C -> IO: write([Model::BlockDesc...])
+end
+C --> User: done
+@enduml
