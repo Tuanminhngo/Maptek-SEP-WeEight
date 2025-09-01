@@ -5,5 +5,6 @@
 *.a
 *.log
 *.tmp
+*.cz.toml
 /compressor/bin/
 .vscode/settings.json
