@@ -294,3 +294,10 @@ int main(){
   cout.write(out.data(), (std::streamsize)out.size());
   return 0;
 }
+
+
+// The program reads a strict input format: 
+// a header X,Y,Z,PX,PY,PZ, a tag table (byte, label) ending with a blank line, then Z slices of Y rows × X bytes. 
+// It streams PZ slices at a time, tiles the volume into parents of size PX×PY×PZ (Real One: 14×10×12), and for each tag in a parent builds a tiny 3-D mask. 
+// A greedy kernel repeatedly finds the largest all-1s cuboid (via z-stack AND → 2-D largest rectangle) and emits x,y,z,dx,dy,dz,label, clearing those voxels, until the mask is empty. 
+// This replaces our earlier optimal DP tiling (which was specific to 2×2×2) because it scales to larger, anisotropic parents.
