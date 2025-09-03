@@ -1,0 +1,2 @@
+[100.0%] parents 8/8 | cuboids 8 | 31518.8 parents/s | 0.38 Mvox/s | ETA 0s
+Done. Emitted 8 cuboids (avg 1.00 per parent)
