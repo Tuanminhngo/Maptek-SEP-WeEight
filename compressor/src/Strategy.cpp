@@ -5,11 +5,14 @@ using Model::ParentBlock;
 
 namespace {
 
-static std::vector<uint8_t> buildMaskSlice(const ParentBlock& parent,
-                                           uint32_t labelId, int z) {
+static void buildMaskSlice(const ParentBlock& parent,
+                           uint32_t labelId, int z,
+                           std::vector<uint8_t>& mask) {
   const int W = parent.sizeX();
   const int H = parent.sizeY();
-  std::vector<uint8_t> mask(static_cast<size_t>(W * H), 0);
+  const size_t N = static_cast<size_t>(W * H);
+  if (mask.size() != N) mask.assign(N, 0);
+  else std::fill(mask.begin(), mask.end(), 0);
 
   for (int y = 0; y < H; ++y) {
     for (int x = 0; x < W; ++x) {
@@ -17,7 +20,6 @@ static std::vector<uint8_t> buildMaskSlice(const ParentBlock& parent,
           (parent.grid().at(x, y, z) == labelId) ? 1u : 0u;
     }
   }
-  return mask;
 }
 
 // Merge horizontal runs on a single row into [x0, x1) intervals where mask==1.
@@ -80,11 +82,12 @@ std::vector<BlockDesc> GreedyStrat::cover(const ParentBlock& parent,
   const int oz = parent.originZ();
 
   std::vector<uint8_t> mask;
+  out.reserve(static_cast<size_t>(W * H));
   std::vector<uint8_t> nextMaskRow(static_cast<size_t>(W), 0);
   std::vector<std::pair<int, int>> prevRuns, currRuns;
 
   for (int z = 0; z < D; ++z) {
-    mask = buildMaskSlice(parent, labelId, z);
+    buildMaskSlice(parent, labelId, z, mask);
 
     struct Group {
       int x0, x1;

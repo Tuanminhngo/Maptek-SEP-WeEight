@@ -7,6 +7,8 @@
 using Model::BlockDesc;
 
 int main() {
+    std::ios::sync_with_stdio(false);
+    std::cin.tie(nullptr);
     IO::Endpoint ep(std::cin, std::cout);
     ep.init();
 
@@ -22,6 +24,6 @@ int main() {
             ep.write(blocks);
         }
     }
-
+    ep.flush();
     return 0;
 }
