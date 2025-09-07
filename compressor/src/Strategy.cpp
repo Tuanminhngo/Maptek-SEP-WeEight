@@ -188,4 +188,94 @@ std::vector<BlockDesc> MaxRectStrat::cover(const ParentBlock& parent,
   GreedyStrat greedy;
   return greedy.cover(parent, labelId);
 }
+
+// ---------------- StreamRLEXY implementation ----------------
+
+StreamRLEXY::StreamRLEXY(int X, int Y, int Z, int PX, int PY,
+                         const Model::LabelTable& labels)
+    : labels_(labels), X_(X), Y_(Y), Z_(Z), PX_(PX), PY_(PY) {
+  numNx_ = (PX_ > 0) ? (X_ / PX_) : 0;
+  active_.assign(static_cast<size_t>(numNx_), {});
+  nextActive_.assign(static_cast<size_t>(numNx_), {});
+  currRuns_.assign(static_cast<size_t>(numNx_), {});
+}
+
+void StreamRLEXY::buildRunsForRow(const std::string& row) {
+  for (int nx = 0; nx < numNx_; ++nx) currRuns_[static_cast<size_t>(nx)].clear();
+
+  int x = 0;
+  while (x < X_) {
+    const unsigned char t = static_cast<unsigned char>(row[static_cast<size_t>(x)]);
+    const uint32_t labelId = labels_.getId(static_cast<char>(t));
+    int x0 = x;
+    do { ++x; } while (x < X_ && static_cast<unsigned char>(row[static_cast<size_t>(x)]) == t);
+    int x1 = x;  // [x0, x1)
+
+    // Slice the run at parent-X boundaries
+    int s = x0;
+    while (s < x1) {
+      const int nx = s / PX_;
+      const int boundary = (nx + 1) * PX_;
+      const int segEnd = (x1 < boundary ? x1 : boundary);
+      currRuns_[static_cast<size_t>(nx)].push_back(Run{s, segEnd, labelId});
+      s = segEnd;
+    }
+  }
+}
+
+void StreamRLEXY::mergeRow(int z, int y, std::vector<Model::BlockDesc>& out) {
+  for (int nx = 0; nx < numNx_; ++nx) {
+    auto& prev = active_[static_cast<size_t>(nx)];
+    auto& next = nextActive_[static_cast<size_t>(nx)];
+    auto& cur  = currRuns_[static_cast<size_t>(nx)];
+    next.clear();
+
+    size_t i = 0, j = 0;
+    while (i < prev.size() && j < cur.size()) {
+      const Group& pg = prev[i];
+      const Run&   cr = cur[j];
+      if (pg.x1 <= cr.x0) {
+        out.push_back(toBlock(z, pg));
+        ++i;
+      } else if (cr.x1 <= pg.x0) {
+        next.push_back(Group{cr.x0, cr.x1, y, 1, cr.labelId});
+        ++j;
+      } else if (pg.labelId == cr.labelId && pg.x0 == cr.x0 && pg.x1 == cr.x1) {
+        next.push_back(Group{pg.x0, pg.x1, pg.startY, pg.height + 1, pg.labelId});
+        ++i; ++j;
+      } else {
+        out.push_back(toBlock(z, pg));
+        ++i;
+      }
+    }
+    while (i < prev.size()) { out.push_back(toBlock(z, prev[i++])); }
+    while (j < cur.size())  { const Run& cr = cur[j++]; next.push_back(Group{cr.x0, cr.x1, y, 1, cr.labelId}); }
+
+    prev.swap(next);
+  }
+}
+
+void StreamRLEXY::flushStripeEnd(int z, std::vector<Model::BlockDesc>& out) {
+  for (int nx = 0; nx < numNx_; ++nx) {
+    for (const auto& pg : active_[static_cast<size_t>(nx)]) {
+      out.push_back(toBlock(z, pg));
+    }
+    active_[static_cast<size_t>(nx)].clear();
+  }
+}
+
+void StreamRLEXY::onRow(int z, int y, const std::string& row,
+                        std::vector<Model::BlockDesc>& out) {
+  buildRunsForRow(row);
+  mergeRow(z, y, out);
+  // End of parent-Y stripe: flush
+  if (PY_ > 0 && y % PY_ == PY_ - 1) {
+    flushStripeEnd(z, out);
+  }
+}
+
+void StreamRLEXY::onSliceEnd(int z, std::vector<Model::BlockDesc>& out) {
+  // Defensive: ensure no carry-over groups across slices
+  flushStripeEnd(z, out);
+}
 }  // namespace Strategy

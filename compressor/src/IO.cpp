@@ -1,5 +1,6 @@
 #include "../include/IO.hpp"
- #include <charconv>
+#include "../include/Strategy.hpp"
+#include <charconv>
 
 using namespace IO;
 
@@ -218,4 +219,48 @@ void Endpoint::flushOut() {
     out_->flush();
     outBuf_.clear();
   }
+}
+
+void Endpoint::emitRLEXY() {
+  if (!initialized_) init();
+
+  const int X = W_;
+  const int Y = H_;
+  const int Z = D_;
+  const int PX = parentX_;
+  const int PY = parentY_;
+
+  if (outBuf_.capacity() < kFlushThreshold_) outBuf_.reserve(kFlushThreshold_);
+
+  Strategy::StreamRLEXY strat(X, Y, Z, PX, PY, *labelTable_);
+  std::vector<Model::BlockDesc> blocks;
+  blocks.reserve(1024);
+
+  std::string row;
+  for (int z = 0; z < Z; ++z) {
+    for (int y = 0; y < Y; ++y) {
+      if (!std::getline(*in_, row)) {
+        throw std::runtime_error("Unexpected EOF while reading model slice");
+      }
+      if (!row.empty() && row.back() == '\r') row.pop_back();
+      if ((int)row.size() < X) {
+        throw std::runtime_error("Row too short while streaming model");
+      }
+      blocks.clear();
+      strat.onRow(z, y, row, blocks);
+      if (!blocks.empty()) write(blocks);
+    }
+    // Optional blank line between slices — consume if present
+    if (z < Z - 1) {
+      int ch = in_->peek();
+      if (ch == '\n' || ch == '\r') {
+        std::string blank;
+        std::getline(*in_, blank);
+      }
+    }
+    blocks.clear();
+    strat.onSliceEnd(z, blocks);
+    if (!blocks.empty()) write(blocks);
+  }
+  flushOut();
 }

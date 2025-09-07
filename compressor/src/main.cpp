@@ -11,19 +11,8 @@ int main() {
     std::cin.tie(nullptr);
     IO::Endpoint ep(std::cin, std::cout);
     ep.init();
-
-    const Model::LabelTable& lt = ep.labels();
-    Strategy::GreedyStrat greedy;
-
-    while (ep.hasNextParent()) {
-        Model::ParentBlock parent = ep.nextParent();
-        
-        for (uint32_t labelId = 0; labelId < lt.size(); ++labelId) {
-            std::vector<BlockDesc> blocks = greedy.cover(parent, labelId);
-            
-            ep.write(blocks);
-        }
-    }
+    // Fast streaming path: Strategy-driven RLE along X with vertical merges
+    ep.emitRLEXY();
     ep.flush();
     return 0;
 }

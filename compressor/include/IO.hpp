@@ -71,6 +71,9 @@ class Endpoint {
   void write(const std::vector<Model::BlockDesc>& blocks);
   // Optional explicit flush
   void flush();
+
+  // Fast streaming path that leverages Strategy::StreamRLEXY
+  void emitRLEXY();
 };
 };  // namespace IO
 
