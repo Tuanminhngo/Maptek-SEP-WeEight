@@ -11,32 +11,33 @@
 
 using Model::BlockDesc;
 
-// Count how many cells in the parent have labelId
+// Count how many cells in the parent have labelId (LOCAL coords!)
 static size_t count_cells_with_label(const Model::ParentBlock& p,
-                                     uint32_t labelId) {
+                                     uint16_t labelId) {
   size_t cnt = 0;
   for (int z = 0; z < p.sizeZ(); ++z)
     for (int y = 0; y < p.sizeY(); ++y)
       for (int x = 0; x < p.sizeX(); ++x)
-        if (p.grid().at(x, y, z) == labelId) ++cnt;
+        if (p.atLocal(x, y, z) == labelId) ++cnt;
   return cnt;
 }
 
-// Pretty print a list of BlockDesc as CSV with label names
+// Pretty print a list of BlockDesc as CSV with label names (LOCAL coords)
 static void print_blocks_csv(const std::vector<BlockDesc>& blocks,
                              const Model::LabelTable& lt,
                              const std::string& headerPrefix) {
   std::cout << headerPrefix << " (count=" << blocks.size() << ")\n";
   for (const auto& b : blocks) {
     const std::string& name = lt.getName(b.labelId);
-    std::cout << "  " << b.x << "," << b.y << "," << b.z << "," << b.dx << ","
-              << b.dy << "," << b.dz << "," << name << "\n";
+    std::cout << "  " << b.x << "," << b.y << "," << b.z << ","
+              << b.dx << "," << b.dy << "," << b.dz << ","
+              << name << "\n";
   }
 }
 
 int main() {
   try {
-    // Load file content
+    // Load input
     std::ifstream f("tests/input.txt");
     if (!f) {
       std::cerr << "[FAIL] tests/input.txt not found\n";
@@ -46,59 +47,62 @@ int main() {
     raw << f.rdbuf();
     const std::string content = raw.str();
 
-    // Init Endpoint (parse header, labels, read full map)
+    // Init Endpoint from string streams (tests expect this form)
     std::istringstream in(content);
-    std::ostringstream out;  // unused sink for now
+    std::ostringstream out; // sink
     IO::Endpoint ep(in, out);
-    ep.init();
+    if (!ep.init()) {
+      std::cerr << "[FAIL] Endpoint init() failed\n";
+      return 1;
+    }
 
     const Model::LabelTable& lt = ep.labels();
 
-    Strategy::DefaultStrat naive;
-    Strategy::GreedyStrat greedy;
+    // Use our Run→Rectangle→Cuboid strategy
+    Strategy::RRCOptions opts;
+    opts.dual_axis_rectangles = false; // keep simple for test
+    opts.fast_uniform_check = true;
+    opts.adjacent_fuse = false;
+
+    Strategy::RRCStrategy rrc(opts);
 
     int parentIndex = 0;
     while (ep.hasNextParent()) {
       Model::ParentBlock p = ep.nextParent();
-      std::cout << "================ Parent #" << parentIndex++ << " origin=("
-                << p.originX() << "," << p.originY() << "," << p.originZ()
-                << ")"
-                << " size=(" << p.sizeX() << "x" << p.sizeY() << "x"
-                << p.sizeZ() << ")\n";
+      std::cout << "================ Parent #" << parentIndex++
+                << " origin=(" << p.originX() << "," << p.originY() << "," << p.originZ() << ")"
+                << " size=(" << p.sizeX() << "x" << p.sizeY() << "x" << p.sizeZ() << ")\n";
 
       // For each label id present in the label table
-      for (uint32_t labelId = 0; labelId < lt.size(); ++labelId) {
-        const std::string& lname = lt.getName(labelId);
+      for (uint16_t labelId = 0; labelId < lt.size(); ++labelId) {
         const size_t cells = count_cells_with_label(p, labelId);
-        if (cells == 0) continue;  // skip labels not present in this parent
+        if (cells == 0) continue;
 
+        const std::string& lname = lt.getName(labelId);
         std::cout << "Label id=" << labelId << " name=" << lname
                   << " cells=" << cells << "\n";
 
-        // Run Default (1x1x1) strategy
-        // std::vector<BlockDesc> naiveBlocks = naive.cover(p, labelId);
-        // Quick sanity: naive emits exactly one block per cell
-        // assert(naiveBlocks.size() == cells);
-        // print_blocks_csv(naiveBlocks, lt, "DefaultStrat blocks");
+        // Run RRC strategy (LOCAL coords)
+        std::vector<BlockDesc> rrcBlocks;
+        rrc.cover(p, labelId, rrcBlocks);
 
-        // Run Greedy (row merges + vertical merges) strategy
-        std::vector<BlockDesc> greedyBlocks = greedy.cover(p, labelId);
-        // Greedy must cover exactly the same total volume of that label
-        size_t greedyCovered = 0;
-        for (const auto& b : greedyBlocks) {
+        // Volume conservation & basic invariants
+        size_t covered = 0;
+        for (const auto& b : rrcBlocks) {
           assert(b.labelId == labelId);
           assert(b.dx > 0 && b.dy > 0 && b.dz >= 1);
-          greedyCovered += static_cast<size_t>(b.dx) * b.dy * b.dz;
+          assert(b.x >= 0 && b.y >= 0 && b.z >= 0);
+          assert(b.x + b.dx <= p.sizeX());
+          assert(b.y + b.dy <= p.sizeY());
+          assert(b.z + b.dz <= p.sizeZ());
+          covered += static_cast<size_t>(b.dx) * b.dy * b.dz;
         }
-        assert(greedyCovered == cells);
-        // Greedy should never be worse than naive in count (usually fewer)
-        // assert(greedyBlocks.size() <= naiveBlocks.size());
+        assert(covered == cells);
 
-        print_blocks_csv(greedyBlocks, lt, "GreedyStrat blocks");
+        print_blocks_csv(rrcBlocks, lt, "RRCStrategy blocks");
 
         std::cout << "Summary for label '" << lname << "': cells=" << cells
-                //   << " | naiveCount=" << naiveBlocks.size()
-                  << " | greedyCount=" << greedyBlocks.size() << "\n\n";
+                  << " | rrcCount=" << rrcBlocks.size() << "\n\n";
       }
     }
 

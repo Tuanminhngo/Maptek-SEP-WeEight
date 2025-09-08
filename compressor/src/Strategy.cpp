@@ -1,188 +1,171 @@
-#include "../include/Strategy.hpp"
+#include "Strategy.hpp"
 
-using Model::BlockDesc;
-using Model::ParentBlock;
-
-namespace {
-
-static std::vector<uint8_t> buildMaskSlice(const ParentBlock& parent,
-                                           uint32_t labelId, int z) {
-  const int W = parent.sizeX();
-  const int H = parent.sizeY();
-  std::vector<uint8_t> mask(static_cast<size_t>(W * H), 0);
-
-  for (int y = 0; y < H; ++y) {
-    for (int x = 0; x < W; ++x) {
-      mask[static_cast<size_t>(x + y * W)] =
-          (parent.grid().at(x, y, z) == labelId) ? 1u : 0u;
-    }
-  }
-  return mask;
-}
-
-// Merge horizontal runs on a single row into [x0, x1) intervals where mask==1.
-static void findRowRuns(const std::vector<uint8_t>& maskRow, int W,
-                        std::vector<std::pair<int, int>>& runs) {
-  runs.clear();
-  int x = 0;
-  while (x < W) {
-    while (x < W && maskRow[x] == 0) ++x;
-    if (x >= W) break;
-    int start = x;
-    while (x < W && maskRow[x] == 1) ++x;
-    int end = x;
-    runs.emplace_back(start, end);
-  }
-}
-
-}  // namespace
+#include <algorithm>
+#include <unordered_map>
 
 namespace Strategy {
 
-std::vector<BlockDesc> DefaultStrat::cover(const ParentBlock& parent,
-                                           uint32_t labelId) {
-  std::vector<BlockDesc> out;
-  const int W = parent.sizeX();
-  const int H = parent.sizeY();
-  const int D = parent.sizeZ();
+struct RectActive {
+  int x0, x1;
+  int y0, y1;  // inclusive span in Y
+};
 
-  const int ox = parent.originX();
-  const int oy = parent.originY();
-  const int oz = parent.originZ();
+// Helper: finalize an active rect into local BlockDesc (z provided)
+static inline void finalize_rect(int z, uint16_t labelId, const RectActive& r,
+                                 std::vector<Model::BlockDesc>& out_local) {
+  Model::BlockDesc b;
+  b.x = r.x0;
+  b.y = r.y0;
+  b.z = z;
+  b.dx = r.x1 - r.x0 + 1;
+  b.dy = r.y1 - r.y0 + 1;
+  b.dz = 1;
+  b.labelId = labelId;
+  out_local.push_back(b);
+}
 
-  out.reserve(static_cast<size_t>(W * H * D));
+// Z-stacking across consecutive slices for identical footprints
+static void z_stack_local(
+    const std::vector<Model::BlockDesc>& slice_rects_local,
+    std::vector<Model::BlockDesc>& out_local) {
+  struct Key {
+    int x, dx, y, dy;
+    bool operator==(const Key& o) const noexcept {
+      return x == o.x && dx == o.dx && y == o.y && dy == o.dy;
+    }
+  };
+  struct KeyHash {
+    size_t operator()(const Key& k) const noexcept {
+      uint64_t h = static_cast<uint64_t>(k.x) * 0x9e3779b185ebca87ull;
+      h ^= static_cast<uint64_t>(k.dx) + 0x9e3779b97f4a7c15ull + (h << 6) +
+           (h >> 2);
+      h ^= static_cast<uint64_t>(k.y) + 0x9e3779b97f4a7c15ull + (h << 6) +
+           (h >> 2);
+      h ^= static_cast<uint64_t>(k.dy) + 0x9e3779b97f4a7c15ull + (h << 6) +
+           (h >> 2);
+      return static_cast<size_t>(h);
+    }
+  };
+  struct Open {
+    Model::BlockDesc b;
+  };
 
-  for (int z = 0; z < D; ++z) {
-    for (int y = 0; y < H; ++y) {
-      for (int x = 0; x < W; ++x) {
-        if (parent.grid().at(x, y, z) == labelId) {
-          out.push_back(BlockDesc{ox + x, oy + y, oz + z, 1, 1, 1, labelId});
-        }
+  std::unordered_map<Key, Open, KeyHash> open;  // local (clears each call)
+
+  for (const auto& r : slice_rects_local) {
+    Key k{r.x, r.dx, r.y, r.dy};
+    auto it = open.find(k);
+    if (it != open.end()) {
+      if (it->second.b.z + it->second.b.dz == r.z) {
+        it->second.b.dz += 1;
+      } else {
+        out_local.push_back(it->second.b);
+        it->second.b = r;
+      }
+    } else {
+      open.emplace(k, Open{r});
+    }
+  }
+  for (auto& kv : open) out_local.push_back(kv.second.b);
+}
+
+void RRCStrategy::cover(const Model::ParentBlock& pb, uint16_t labelId,
+                        std::vector<Model::BlockDesc>& out) {
+  const int SX = pb.sizeX(), SY = pb.sizeY(), SZ = pb.sizeZ();
+
+  // Quick presence check + uniform-label optimization
+  bool any = false;
+  bool all_this_label = true;
+  for (int z = 0; z < SZ; ++z) {
+    for (int y = 0; y < SY; ++y) {
+      for (int x = 0; x < SX; ++x) {
+        uint16_t id = pb.atLocal(x, y, z);
+        if (id == labelId)
+          any = true;
+        else
+          all_this_label = false;
       }
     }
   }
-  return out;
-}
+  if (!any) return;
+  if (opts_.fast_uniform_check && all_this_label) {
+    // Emit one local cuboid
+    Model::BlockDesc b;
+    b.x = 0;
+    b.y = 0;
+    b.z = 0;
+    b.dx = SX;
+    b.dy = SY;
+    b.dz = SZ;
+    b.labelId = labelId;
+    out.push_back(b);
+    return;
+  }
 
-// GreedyStrat
-//   - For each z-slice, compute mask
-//   - Vertical merge across rows
-//   (Produces blocks with dz=1.)
-std::vector<BlockDesc> GreedyStrat::cover(const ParentBlock& parent,
-                                          uint32_t labelId) {
-  std::vector<BlockDesc> out;
-  const int W = parent.sizeX();
-  const int H = parent.sizeY();
-  const int D = parent.sizeZ();
+  // Phase A+B: per-slice rectangles via run merging
+  std::vector<Model::BlockDesc> rects_local;
+  rects_local.reserve(SX * SY);  // rough
 
-  const int ox = parent.originX();
-  const int oy = parent.originY();
-  const int oz = parent.originZ();
-
-  std::vector<uint8_t> mask;
-  std::vector<uint8_t> nextMaskRow(static_cast<size_t>(W), 0);
-  std::vector<std::pair<int, int>> prevRuns, currRuns;
-
-  for (int z = 0; z < D; ++z) {
-    mask = buildMaskSlice(parent, labelId, z);
-
-    struct Group {
-      int x0, x1;
-      int startY;
-      int height;
-    };
-    std::vector<Group> activeGroups;
-    activeGroups.clear();
-
-    auto flushActiveGroups = [&](int finalY) {
-      for (const auto& g : activeGroups) {
-        const int gx = g.x0;
-        const int gy = g.startY;
-        const int dx = g.x1 - g.x0;
-        const int dy = g.height;
-        if (dx > 0 && dy > 0) {
-          out.push_back(
-              BlockDesc{ox + gx, oy + gy, oz + z, dx, dy, 1, labelId});
+  for (int z = 0; z < SZ; ++z) {
+    std::vector<RectActive> active;
+    for (int y = 0; y < SY; ++y) {
+      // Build runs in this row
+      std::vector<std::pair<int, int>> runs;  // [x0,x1] inclusive
+      int x = 0;
+      while (x < SX) {
+        if (pb.atLocal(x, y, z) == labelId) {
+          int x0 = x;
+          while (x < SX && pb.atLocal(x, y, z) == labelId) ++x;
+          runs.emplace_back(x0, x - 1);
+        } else {
+          ++x;
         }
       }
-      activeGroups.clear();
-    };
 
-    // Iterate rows, compute runs, and merge vertically with previous row's runs
-    prevRuns.clear();
-    for (int y = 0; y < H; ++y) {
-      // Build view of current row
-      for (int x = 0; x < W; ++x)
-        nextMaskRow[static_cast<size_t>(x)] =
-            mask[static_cast<size_t>(x + y * W)];
-      currRuns.clear();
-      findRowRuns(nextMaskRow, W, currRuns);
+      // Match actives with runs (exact x-span)
+      std::vector<RectActive> next_active;
+      std::vector<char> used(runs.size(), 0);
+      next_active.reserve(std::max<size_t>(active.size(), runs.size()));
 
-      std::vector<Group> newActive;
-      newActive.reserve(currRuns.size());
-
-      for (const auto& run : currRuns) {
-        const int rx0 = run.first;
-        const int rx1 = run.second;
-
-        // Try to find a matching active group to extend
+      for (const auto& ar : active) {
         bool extended = false;
-        for (auto& g : activeGroups) {
-          if (g.x0 == rx0 && g.x1 == rx1) {
-            // extend vertically
-            ++g.height;
-            newActive.push_back(g);
+        for (size_t i = 0; i < runs.size(); ++i) {
+          if (used[i]) continue;
+          if (runs[i].first == ar.x0 && runs[i].second == ar.x1) {
+            // extend
+            RectActive e = ar;
+            e.y1 = y;
+            next_active.push_back(e);
+            used[i] = 1;
             extended = true;
             break;
           }
         }
         if (!extended) {
-          // Start a new vertical group at this row
-          newActive.push_back(Group{rx0, rx1, y, 1});
+          finalize_rect(z, labelId, ar, rects_local);
         }
       }
 
-      // Any active group that didn't get extended must be flushed
-      // We detect them by removing those present in newActive
-      // (Simple approach: for each old group, see if it's in new set; if not,
-      // emit)
-      for (const auto& oldg : activeGroups) {
-        bool stillActive = false;
-        for (const auto& ng : newActive) {
-          if (ng.x0 == oldg.x0 && ng.x1 == oldg.x1 &&
-              ng.startY == oldg.startY &&
-              (ng.height == oldg.height + 1 || ng.height == oldg.height)) {
-            // same span; continued
-            stillActive = true;
-            break;
-          }
+      // Start new actives for unused runs
+      for (size_t i = 0; i < runs.size(); ++i)
+        if (!used[i]) {
+          RectActive nr{runs[i].first, runs[i].second, y, y};
+          next_active.push_back(nr);
         }
-        if (!stillActive) {
-          // emit oldg
-          const int gx = oldg.x0;
-          const int gy = oldg.startY;
-          const int dx = oldg.x1 - oldg.x0;
-          const int dy = oldg.height;
-          if (dx > 0 && dy > 0) {
-            out.push_back(
-                BlockDesc{ox + gx, oy + gy, oz + z, dx, dy, 1, labelId});
-          }
-        }
-      }
 
-      activeGroups.swap(newActive);
+      active.swap(next_active);
     }
 
-    // Flush any groups that were still active at the end of the slice
-    flushActiveGroups(H);
+    // Finalize remaining actives at this z
+    for (const auto& ar : active) finalize_rect(z, labelId, ar, rects_local);
   }
 
-  return out;
+  // Phase C: Z-stacking into local cuboids
+  std::vector<Model::BlockDesc> cuboids_local;
+  cuboids_local.reserve(rects_local.size());
+  z_stack_local(rects_local, cuboids_local);
+  // Output local cuboids for this label (caller will translate to absolute)
+  out.insert(out.end(), cuboids_local.begin(), cuboids_local.end());
 }
 
-std::vector<BlockDesc> MaxRectStrat::cover(const ParentBlock& parent,
-                                           uint32_t labelId) {
-  GreedyStrat greedy;
-  return greedy.cover(parent, labelId);
-}
 }  // namespace Strategy

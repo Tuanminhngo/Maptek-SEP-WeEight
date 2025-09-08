@@ -1,40 +1,37 @@
-#ifndef APP_HPP
-#define APP_HPP
+#pragma once
+#include <cstdint>
+#include <vector>
 
-#include <memory>
-#include <string>
-
-namespace IO {
-class Endpoint;
-};
-namespace Worker {
-class DirectWorker;
-};
+#include "IO.hpp"
+#include "Worker.hpp"
 
 namespace App {
 
-// Global configuration setting for the program
 struct Config {
-  int parentX, parentY, parentZ;
-  std::string methodUsed;
+  // Parent sizes (default to The Real One)
+  int32_t parentX{14}, parentY{10}, parentZ{12};
 
-  Config(int x, int y, int z, const std::string& method = "default")
-      : parentX(x), parentY(y), parentZ(z), methodUsed(method) {}
+  // Strategy and stitching
+  Strategy::RRCOptions rrc{};
+  Worker::StitchConfig stitch{};
+  bool enable_cache{true};
+
+  // Execution
+  uint32_t threads{1}; // (reserved for a future ThreadWorker)
 };
 
-// Coordinate IO and WOrker to execute
+/** High-level coordinator: IO loop -> Worker -> IO.write */
 class Coordinator {
- private:
-  std::unique_ptr<IO::Endpoint> ioEndpoint;
-  std::unique_ptr<Worker::DirectWorker> worker;
-  Config config;
+public:
+  Coordinator(IO::Endpoint& io, Worker::WorkerBackend& worker)
+  : io_(io), worker_(worker) {}
 
- public:
-  explicit Coordinator(const Config& cfg);
+  // Runs the full pipeline. Returns 0 on success.
+  int run();
 
-  void run();
+private:
+  IO::Endpoint& io_;
+  Worker::WorkerBackend& worker_;
 };
 
-}  // namespace App
-
-#endif
+} // namespace App

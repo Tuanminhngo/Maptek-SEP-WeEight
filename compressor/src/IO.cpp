@@ -1,185 +1,166 @@
-#include "../include/IO.hpp"
+#include "IO.hpp"
+#include <sstream>
+#include <iostream>
+#include <string>
+#include <algorithm>
+#include <cctype>
 
-using namespace IO;
+namespace IO {
 
-namespace {
-inline void trimFront(std::string& s) {
-  size_t i = 0;
-  while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
-  s.erase(0, i);
+static inline std::string trim(const std::string& s) {
+  size_t a = s.find_first_not_of(" \t\r\n");
+  if (a == std::string::npos) return "";
+  size_t b = s.find_last_not_of(" \t\r\n");
+  return s.substr(a, b - a + 1);
 }
 
-inline void trimBack(std::string& s) {
-  size_t i = s.size();
-  while (i > 0 && std::isspace(static_cast<unsigned char>(s[i - 1]))) --i;
-  s.erase(i);
-}
-inline void trim(std::string& s) {
-  trimFront(s);
-  trimBack(s);
+bool Endpoint::init() {
+  if (!in_ || !out_) return false;
+  return init(*in_, *out_);
 }
 
-// header: x_count,y_count,z_count,parent_x,parent_y,parent_z
-bool parseCsvInts(const std::string& line, int out[6]) {
-  std::istringstream ss(line);
-  std::string token;
-  for (int i = 0; i < 6; ++i) {
-    if (!std::getline(ss, token, ',')) return false;
-    trim(token);
-    try {
-      out[i] = std::stoi(token);
-    } catch (...) {
-      return false;
-    }
-  }
+bool Endpoint::init(std::istream& in, std::ostream& out) {
+  in_  = &in;
+  out_ = &out;
+  if (!parseHeader(in)) return false;
+  if (!parseLabelTable(in)) return false;
+  if (!parseGrid(in)) return false;
+  resetParentIterator();
   return true;
 }
 
-bool parseLabelLine(const std::string& line, char& key, std::string& name) {
-  auto pos = line.find(',');
-  if (pos == std::string::npos) return false;
-  std::string left = line.substr(0, pos);
-  std::string right = line.substr(pos + 1);
-  trim(left);
-  trim(right);
-  if (left.empty()) return false;
-  key = left[0];
-  name = right;
-  return true;
-}
-}  // namespace
-
-Endpoint::Endpoint(std::istream& in, std::ostream& out)
-    : in_(&in),
-      out_(&out),
-      labelTable_(std::make_unique<Model::LabelTable>()),
-      initialized_(false),
-      eof_(false) {}
-
-void Endpoint::init() {
-  if (initialized_) return;
-
-  // 1) Header
+bool Endpoint::parseHeader(std::istream& in) {
   std::string line;
-  if (!std::getline(*in_, line))
-    throw std::runtime_error("Failed to read header line");
+  if (!std::getline(in, line)) return false;
+  line = trim(line);
+  if (line.empty()) return false;
 
-  int header[6];
-  if (!parseCsvInts(line, header))
-    throw std::runtime_error("Invalid header format (expected 6 CSV ints)");
-
-  const int W = header[0], H = header[1], D = header[2];
-  parentX_ = header[3];
-  parentY_ = header[4];
-  parentZ_ = header[5];
-
-  if (W <= 0 || H <= 0 || D <= 0 || parentX_ <= 0 || parentY_ <= 0 ||
-      parentZ_ <= 0)
-    throw std::runtime_error("Non-positive dimensions in header");
-
-  if (W % parentX_ || H % parentY_ || D % parentZ_)
-    throw std::runtime_error("Model dims must be divisible by parent dims");
-
-  // 2) Label table (until blank line)
-  while (std::getline(*in_, line)) {
-    std::string copy = line;
-    trim(copy);
-    if (copy.empty()) break;
-    char key;
-    std::string name;
-    if (!parseLabelLine(copy, key, name))
-      throw std::runtime_error("Invalid label line: " + copy);
-    labelTable_->add(key, name);
+  // Expect: W,H,D[,parentX,parentY,parentZ]
+  std::vector<int> vals;
+  std::stringstream ss(line);
+  while (ss.good()) {
+    std::string tok;
+    if (!std::getline(ss, tok, ',')) break;
+    tok = trim(tok);
+    if (!tok.empty()) vals.push_back(std::stoi(tok));
   }
-  if (labelTable_->size() == 0) throw std::runtime_error("Empty label table");
+  if (vals.size() != 3 && vals.size() != 6) return false;
 
-  // 3) Read full model grid (slice-by-slice)
-  mapModel_ = std::make_unique<Model::Grid>(W, H, D);
-  parent_ = std::make_unique<Model::Grid>(parentX_, parentY_, parentZ_);
+  header_.W = vals[0]; header_.H = vals[1]; header_.D = vals[2];
+  if (vals.size() == 6) {
+    header_.parentX = vals[3]; header_.parentY = vals[4]; header_.parentZ = vals[5];
+  }
+  map_ = Model::Grid(header_.W, header_.H, header_.D);
+  return true;
+}
 
-  // For each slice z: H lines; each line has W characters (tags).
-  for (int z = 0; z < D; ++z) {
-    for (int y = 0; y < H; ++y) {
-      if (!std::getline(*in_, line))
-        throw std::runtime_error(
-            "Unexpected EOF while reading model (z=" + std::to_string(z) +
-            ", y=" + std::to_string(y) + ")");
-      if ((int)line.size() < W)
-        throw std::runtime_error("Row too short at z=" + std::to_string(z) +
-                                 ", y=" + std::to_string(y));
-      for (int x = 0; x < W; ++x) {
-        const char tag = line[x];
-        const uint32_t id = labelTable_->getId(tag);  \
-        const int yy = H - 1 - y;
-        mapModel_->at(x, y, z) = id;
+bool Endpoint::parseLabelTable(std::istream& in) {
+  std::string line;
+  while (std::getline(in, line)) {
+    line = trim(line);
+    if (line.empty()) break; // blank line ends table
+    // Format: "<char>, <Name...>"
+    size_t comma = line.find(',');
+    if (comma == std::string::npos || comma == 0) return false;
+
+    // tag is the last non-space char before comma
+    size_t i = comma;
+    while (i > 0 && std::isspace(static_cast<unsigned char>(line[i-1]))) --i;
+    if (i == 0) return false;
+    char tag = line[i-1];
+
+    std::string name = trim(line.substr(comma + 1));
+    if (name.empty()) return false;
+    labels_.add(tag, name);
+  }
+  return true;
+}
+
+bool Endpoint::parseGrid(std::istream& in) {
+  std::string line;
+  const uint32_t W = header_.W, H = header_.H, D = header_.D;
+  for (uint32_t z = 0; z < D; ++z) {
+    for (uint32_t y = 0; y < H; ++y) {
+      // Skip empty lines; accept lines with >= W characters
+      do {
+        if (!std::getline(in, line)) return false;
+        line = trim(line);
+      } while (line.empty());
+
+      if (line.size() < W) return false;
+      for (uint32_t x = 0; x < W; ++x) {
+        char tag = line[x];
+        uint16_t id = labels_.getId(tag);
+        map_.at(x, y, z) = id; // unknown tags remain 0xFFFF; strategies ignore
       }
     }
-    // Optional blank line between slices — consume if present
-    std::streampos pos = in_->tellg();
-    if (in_->peek() == '\n' || in_->peek() == '\r') {
-      std::getline(*in_, line);
-    }
+    // Optional blank line between slices: ignore if present
   }
-
-  // 4) Reset parent iteration counters
-  nx_ = ny_ = nz_ = 0;
-  initialized_ = true;
-  eof_ = false;
+  return true;
 }
 
-bool Endpoint::hasNextParent() const {
-  if (!initialized_) return false;
-  const int W = mapModel_->width(), H = mapModel_->height(),
-            D = mapModel_->depth();
-  const int PX = parentX_, PY = parentY_, PZ = parentZ_;
-  const int maxNx = W / PX;
-  const int maxNy = H / PY;
-  const int maxNz = D / PZ;
+void Endpoint::resetParentIterator() {
+  parents_x_ = (header_.W + header_.parentX - 1) / header_.parentX;
+  parents_y_ = (header_.H + header_.parentY - 1) / header_.parentY;
+  parents_z_ = (header_.D + header_.parentZ - 1) / header_.parentZ;
+  cur_px_ = 0; cur_py_ = 0; cur_pz_ = -1; // not started
+}
 
-  if (nz_ < maxNz) return true;
-  return false;
+bool Endpoint::hasNextParent() const noexcept {
+  if (parents_x_ == 0 || parents_y_ == 0 || parents_z_ == 0) return false;
+  if (cur_pz_ == -1) return true; // first one exists
+
+  int npz = cur_pz_ + 1;
+  int npy = cur_py_;
+  int npx = cur_px_;
+  if (npz >= parents_z_) { npz = 0; ++npy; }
+  if (npy >= parents_y_) { npy = 0; ++npx; }
+  return (npx < parents_x_);
 }
 
 Model::ParentBlock Endpoint::nextParent() {
-  if (!hasNextParent())
-    throw std::runtime_error("nextParent() called past the end");
-
-  const int W = mapModel_->width(), H = mapModel_->height();
-  const int PX = parentX_, PY = parentY_, PZ = parentZ_;
-
-  const int maxNx = W / PX;
-  const int maxNy = H / PY;
-
-  // Compute this parent global origin from (nx_, ny_, nz_)
-  const int originX = nx_ * PX;
-  const int originY = ny_ * PY;
-  const int originZ = nz_ * PZ;
-
-  for (int dz = 0; dz < PZ; ++dz)
-    for (int dy = 0; dy < PY; ++dy)
-      for (int dx = 0; dx < PX; ++dx)
-        parent_->at(dx, dy, dz) =
-            mapModel_->at(originX + dx, originY + dy, originZ + dz);
-
-  // Advance parent cursor: x -> y -> z
-  if (++nx_ >= maxNx) {
-    nx_ = 0;
-    if (++ny_ >= maxNy) {
-      ny_ = 0;
-      ++nz_;
+  if (cur_pz_ == -1) {
+    cur_px_ = 0; cur_py_ = 0; cur_pz_ = 0;
+  } else {
+    ++cur_pz_;
+    if (cur_pz_ >= parents_z_) {
+      cur_pz_ = 0;
+      ++cur_py_;
+      if (cur_py_ >= parents_y_) {
+        cur_py_ = 0;
+        ++cur_px_;
+      }
     }
   }
-
-  return Model::ParentBlock(originX, originY, originZ, *parent_);
+  const int32_t ox = cur_px_ * static_cast<int32_t>(header_.parentX);
+  const int32_t oy = cur_py_ * static_cast<int32_t>(header_.parentY);
+  const int32_t oz = cur_pz_ * static_cast<int32_t>(header_.parentZ);
+  const int32_t sx = std::min<int32_t>(header_.parentX, static_cast<int32_t>(header_.W) - ox);
+  const int32_t sy = std::min<int32_t>(header_.parentY, static_cast<int32_t>(header_.H) - oy);
+  const int32_t sz = std::min<int32_t>(header_.parentZ, static_cast<int32_t>(header_.D) - oz);
+  return Model::ParentBlock(&map_, ox, oy, oz, sx, sy, sz);
 }
 
-const Model::LabelTable& Endpoint::labels() const { return *labelTable_; }
+void Endpoint::writeChunk(const std::vector<Model::BlockDesc>& blocks) const {
+  // Count line
+  (*out_) << blocks.size() << '\n';
+  // Then N lines: x,y,z,dx,dy,dz,token
+  for (const auto& b : blocks) {
+    char token = labels_.getTag(b.labelId);
+    (*out_) << b.x << ',' << b.y << ',' << b.z << ','
+            << b.dx << ',' << b.dy << ',' << b.dz << ','
+            << token << '\n';
+  }
+}
 
+// Legacy writer (name at the end). Not used by chunked evaluator.
 void Endpoint::write(const std::vector<Model::BlockDesc>& blocks) {
   for (const auto& b : blocks) {
-    const std::string& name = labelTable_->getName(b.labelId);
-    (*out_) << b.x << ',' << b.y << ',' << b.z << ',' << b.dx << ',' << b.dy
-            << ',' << b.dz << ',' << name << '\n';
+    const std::string& name = labels_.getName(b.labelId);
+    (*out_) << b.x << ',' << b.y << ',' << b.z << ','
+            << b.dx << ',' << b.dy << ',' << b.dz << ','
+            << name << '\n';
   }
-  out_->flush();
 }
+
+} // namespace IO
