@@ -1,6 +1,7 @@
 // RealOne_greedy.cpp
 // Greedy compressor for Maptek "The Real One" parents 14x10x12.
-// Optimized: bitset rows (fast z-stack AND), per-tag bounding box, tiny-tag fast path.
+// Optimized: bitset rows (fast z-stack AND), per-tag bounding box,
+// tiny-tag fast path, surface-weighted scoring, grow-after-pick, Z-merge.
 // Output: CSV lines "x,y,z,dx,dy,dz,label"
 //
 // Build: g++ -std=c++17 -O3 -march=native -flto -Wall -Wextra -o real_one RealOne_greedy.cpp
@@ -95,10 +96,21 @@ static bool read_slice(int Y,int X, vector<string> &dest){
   return true;
 }
 
-// ----------------------------- largest rectangle (2-D) -----------------------------
+// ----------------------------- geometry + scoring -----------------------------
 struct Cub{int ox=0,oy=0,oz=0, dx=0,dy=0,dz=0; int vol=0;};
 
-// Classic histogram + monotonic stack per row (binary matrix).
+struct Weights {
+  int m_vol = 4;        // volume weight
+  int n_surf = 1;       // surface penalty
+  bool prefer_dz = true;// tie-break towards thicker dz
+};
+static inline long long scored(const Cub& c, const Weights& W) {
+  long long vol = 1LL*c.dx*c.dy*c.dz;
+  long long surf = 2LL*(1LL*c.dx*c.dy + 1LL*c.dy*c.dz + 1LL*c.dx*c.dz);
+  return W.m_vol*vol - W.n_surf*surf;
+}
+
+// ----------------------------- largest rectangle (2-D) -----------------------------
 static inline void largest_rectangle_2d(const vector<vector<uint8_t>> &M,
                                         int PX,int PY,
                                         int &best_area,int &out_ox,int &out_oy,int &out_dx,int &out_dy){
@@ -127,24 +139,97 @@ static inline void largest_rectangle_2d(const vector<vector<uint8_t>> &M,
   }
 }
 
-// ----------------------------- optimized largest cuboid -----------------------------
-// Use bitmasks per (z,y) row; works when sPX <= 64; else fallback.
-
+// ----------------------------- bitset helpers -----------------------------
 using RowMask = uint64_t;
 static inline RowMask bit1(int x){ return RowMask(1ULL << x); }
 static inline RowMask full_row(int w){ return w>=64 ? ~RowMask(0) : (RowMask(1ULL<<w)-1ULL); }
 
-static inline Cub largest_cuboid_bitset(const vector<RowMask>& A, int sPX,int sPY,int sPZ){
+// Grow-after-pick on bitset A (keeps correctness, adds voxels if entire faces are present)
+static inline void expand_cuboid_bitset(const vector<RowMask>& A, int sPX,int sPY,int sPZ, Cub& c){
+  auto mask_for = [&](int ox,int w){ return w==64 ? ~RowMask(0) : ((RowMask(1ULL<<w)-1ULL) << ox); };
+
+  bool grown = true;
+  while (grown) {
+    grown = false;
+
+    // +X
+    if (c.ox + c.dx < sPX) {
+      RowMask need = mask_for(c.ox, c.dx) | bit1(c.ox + c.dx);
+      bool ok=true;
+      for(int zz=0; zz<c.dz && ok; ++zz)
+        for(int yy=0; yy<c.dy && ok; ++yy) {
+          RowMask r = A[(c.oz+zz)*sPY + (c.oy+yy)];
+          ok &= ((r & need) == need);
+        }
+      if (ok) { ++c.dx; c.vol = c.dx*c.dy*c.dz; grown=true; continue; }
+    }
+    // -X
+    if (c.ox > 0) {
+      RowMask need = mask_for(c.ox-1, c.dx+1);
+      bool ok=true;
+      for(int zz=0; zz<c.dz && ok; ++zz)
+        for(int yy=0; yy<c.dy && ok; ++yy) {
+          RowMask r = A[(c.oz+zz)*sPY + (c.oy+yy)];
+          ok &= ((r & need) == need);
+        }
+      if (ok) { --c.ox; ++c.dx; c.vol = c.dx*c.dy*c.dz; grown=true; continue; }
+    }
+    // +Y
+    if (c.oy + c.dy < sPY) {
+      RowMask need = mask_for(c.ox, c.dx);
+      bool ok=true;
+      for(int zz=0; zz<c.dz && ok; ++zz){
+        RowMask r = A[(c.oz+zz)*sPY + (c.oy+c.dy)];
+        ok &= ((r & need) == need);
+      }
+      if (ok) { ++c.dy; c.vol = c.dx*c.dy*c.dz; grown=true; continue; }
+    }
+    // -Y
+    if (c.oy > 0) {
+      RowMask need = mask_for(c.ox, c.dx);
+      bool ok=true;
+      for(int zz=0; zz<c.dz && ok; ++zz){
+        RowMask r = A[(c.oz+zz)*sPY + (c.oy-1)];
+        ok &= ((r & need) == need);
+      }
+      if (ok) { --c.oy; ++c.dy; c.vol = c.dx*c.dy*c.dz; grown=true; continue; }
+    }
+    // +Z
+    if (c.oz + c.dz < sPZ) {
+      RowMask need = mask_for(c.ox, c.dx);
+      bool ok=true;
+      for(int yy=0; yy<c.dy && ok; ++yy){
+        RowMask r = A[(c.oz+c.dz)*sPY + (c.oy+yy)];
+        ok &= ((r & need) == need);
+      }
+      if (ok) { ++c.dz; c.vol = c.dx*c.dy*c.dz; grown=true; continue; }
+    }
+    // -Z
+    if (c.oz > 0) {
+      RowMask need = mask_for(c.ox, c.dx);
+      bool ok=true;
+      for(int yy=0; yy<c.dy && ok; ++yy){
+        RowMask r = A[(c.oz-1)*sPY + (c.oy+yy)];
+        ok &= ((r & need) == need);
+      }
+      if (ok) { --c.oz; ++c.dz; c.vol = c.dx*c.dy*c.dz; grown=true; continue; }
+    }
+  }
+}
+
+// ----------------------------- largest cuboid finders -----------------------------
+static inline Cub largest_cuboid_bitset(const vector<RowMask>& A,
+                                        int sPX,int sPY,int sPZ,
+                                        const Weights& W){
   Cub best; best.vol=0;
+  long long bestScore = LLONG_MIN;
   vector<RowMask> M(sPY);
   vector<vector<uint8_t>> M2(sPY, vector<uint8_t>(sPX, 0));
 
   for(int zlo=0; zlo<sPZ; ++zlo){
     for(int y=0;y<sPY;++y) M[y] = full_row(sPX);
     for(int zhi=zlo; zhi<sPZ; ++zhi){
-      // AND in layer
       for(int y=0;y<sPY;++y) M[y] &= A[zhi*sPY + y];
-      // materialize to tiny 2D and run largest rectangle
       for(int y=0;y<sPY;++y){
         RowMask r=M[y];
         for(int x=0;x<sPX;++x) M2[y][x] = (r & bit1(x)) ? 1 : 0;
@@ -153,9 +238,15 @@ static inline Cub largest_cuboid_bitset(const vector<RowMask>& A, int sPX,int sP
       largest_rectangle_2d(M2, sPX, sPY, area, ox, oy, dx, dy);
       if(area>0){
         int dz = (zhi-zlo+1);
-        long long vol = 1LL*area*dz;
-        if(vol>best.vol || (vol==best.vol && (dz>best.dz || (dz==best.dz && (dy>best.dy || (dy==best.dy && dx>best.dx)))))){
-          best = {ox,oy,zlo,dx,dy,dz,(int)vol};
+        Cub c{ox,oy,zlo,dx,dy,dz,area*dz};
+        long long sc = scored(c, W);
+        if (sc > bestScore ||
+            (sc == bestScore && (
+               (W.prefer_dz && (c.dz>best.dz)) ||
+               (!W.prefer_dz && (c.dy>best.dy)) ||
+               (c.dx>best.dx)
+            ))) {
+          best = c; bestScore = sc;
         }
       }
     }
@@ -163,7 +254,7 @@ static inline Cub largest_cuboid_bitset(const vector<RowMask>& A, int sPX,int sP
   return best;
 }
 
-// Fallback: byte-matrix (works for any width). Reuses your original 3D method.
+// Fallback: byte-matrix (works for any width).
 static inline Cub largest_cuboid_bytes(const vector<vector<vector<uint8_t>>> &A, int PX,int PY,int PZ){
   Cub best; best.vol=0;
   vector<vector<uint8_t>> M(PY, vector<uint8_t>(PX,1));
@@ -184,6 +275,30 @@ static inline Cub largest_cuboid_bytes(const vector<vector<vector<uint8_t>>> &A,
     }
   }
   return best;
+}
+
+// ----------------------------- post-merge along Z -----------------------------
+static inline void merge_z(vector<Cub>& v){
+  sort(v.begin(), v.end(), [](const Cub& a, const Cub& b){
+    if(a.ox!=b.ox) return a.ox<b.ox;
+    if(a.oy!=b.oy) return a.oy<b.oy;
+    if(a.dx!=b.dx) return a.dx<b.dx;
+    if(a.dy!=b.dy) return a.dy<b.dy;
+    return a.oz<b.oz;
+  });
+  vector<Cub> out; out.reserve(v.size());
+  for(const auto& c : v){
+    if(!out.empty()){
+      Cub& last = out.back();
+      if(last.ox==c.ox && last.oy==c.oy && last.dx==c.dx && last.dy==c.dy &&
+         last.oz + last.dz == c.oz){
+        last.dz += c.dz; last.vol = last.dx*last.dy*last.dz;
+        continue;
+      }
+    }
+    out.push_back(c);
+  }
+  v.swap(out);
 }
 
 // ----------------------------- main -----------------------------
@@ -288,29 +403,31 @@ int main(){
                 pop += __builtin_popcountll((unsigned long long)r);
               }
             }
-            // Greedy peel using bitset cuboids
+
+            // Greedy peel using bitset cuboids, with score and expansion.
+            Weights W; W.m_vol=6; W.n_surf=1; // stronger chunk bias
+            vector<Cub> out_cubs; out_cubs.reserve(64);
+
             int guard=0;
             while(pop>0 && guard < sPX*sPY*sPZ + 1000){
-              Cub c = largest_cuboid_bitset(A, sPX, sPY, sPZ);
+              Cub c = largest_cuboid_bitset(A, sPX, sPY, sPZ, W);
               if(c.vol==0){
-                // fallback: find any 1-bit and emit 1x1x1
+                // fallback: find any 1-bit -> 1x1x1
                 bool found=false;
                 for(int kz=0;kz<sPZ && !found;++kz)
                   for(int ky=0;ky<sPY && !found;++ky){
                     RowMask r = A[kz*sPY + ky];
                     if(r){
                       int bx = __builtin_ctzll((unsigned long long)r);
-                      emit_line(out, x0 + (xmin+bx), y0 + (ymin+ky), z + (zmin+kz), 1,1,1, g_label[t]);
+                      out_cubs.push_back({bx,ky,kz,1,1,1,1});
                       A[kz*sPY + ky] = RowMask(r & ~bit1(bx));
                       --pop; found=true;
                     }
                   }
                 if(!found) break;
               }else{
-                // emit selected cuboid with offsets
-                emit_line(out, x0 + (xmin + c.ox), y0 + (ymin + c.oy), z + (zmin + c.oz),
-                          c.dx, c.dy, c.dz, g_label[t]);
-                // clear bits in A and adjust popcount
+                // expand, then clear bits, then remember cuboid
+                expand_cuboid_bitset(A, sPX, sPY, sPZ, c);
                 RowMask mask = (c.dx==64 ? ~RowMask(0) : ((RowMask(1ULL<<c.dx)-1ULL) << c.ox));
                 for(int zz=0; zz<c.dz; ++zz){
                   for(int yy=0; yy<c.dy; ++yy){
@@ -321,10 +438,19 @@ int main(){
                     A[idx] = after;
                   }
                 }
+                out_cubs.push_back(c);
               }
               ++guard;
-              flush_if_big(out);
             }
+
+            // Merge stacked bricks in Z and emit
+            merge_z(out_cubs);
+            for(const auto& q : out_cubs){
+              emit_line(out, x0 + (xmin + q.ox), y0 + (ymin + q.oy), z + (zmin + q.oz),
+                        q.dx, q.dy, q.dz, g_label[t]);
+            }
+            flush_if_big(out);
+
           }else{
             // fallback (very wide PX): byte-matrix version limited to bbox
             vector<vector<vector<uint8_t>>> A(sPZ, vector<vector<uint8_t>>(sPY, vector<uint8_t>(sPX,0)));
