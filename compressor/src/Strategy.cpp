@@ -189,6 +189,83 @@ std::vector<BlockDesc> MaxRectStrat::cover(const ParentBlock& parent,
   return greedy.cover(parent, labelId);
 }
 
+// RLEXYStrat: process within a single ParentBlock
+std::vector<BlockDesc> RLEXYStrat::cover(const ParentBlock& parent,
+                                         uint32_t labelId) {
+  std::vector<BlockDesc> out;
+  const int W = parent.sizeX();
+  const int H = parent.sizeY();
+  const int D = parent.sizeZ();
+
+  const int ox = parent.originX();
+  const int oy = parent.originY();
+  const int oz = parent.originZ();
+
+  // Groups active while scanning rows, per z-slice
+  struct Group { int x0, x1, startY, height; };
+  std::vector<Group> prev, next;
+  std::vector<std::pair<int,int>> currRuns;
+  currRuns.reserve(static_cast<size_t>(W));
+
+  auto emitBlock = [&](int z, const Group& g) {
+    const int gx = g.x0;
+    const int gy = g.startY;
+    const int dx = g.x1 - g.x0;
+    const int dy = g.height;
+    if (dx > 0 && dy > 0) {
+      out.push_back(BlockDesc{ox + gx, oy + gy, oz + z, dx, dy, 1, labelId});
+    }
+  };
+
+  for (int z = 0; z < D; ++z) {
+    prev.clear();
+    for (int y = 0; y < H; ++y) {
+      // Build runs along X for this row and labelId
+      currRuns.clear();
+      int x = 0;
+      while (x < W) {
+        // skip non-matching
+        while (x < W && parent.grid().at(x, y, z) != labelId) ++x;
+        if (x >= W) break;
+        int x0 = x;
+        while (x < W && parent.grid().at(x, y, z) == labelId) ++x;
+        int x1 = x;
+        currRuns.emplace_back(x0, x1);
+      }
+
+      // Merge with prev active groups
+      next.clear();
+      size_t i = 0, j = 0;
+      while (i < prev.size() && j < currRuns.size()) {
+        const Group& pg = prev[i];
+        const auto& cr = currRuns[j];
+        const int rx0 = cr.first, rx1 = cr.second;
+        if (pg.x1 <= rx0) {
+          emitBlock(z, pg); ++i;
+        } else if (rx1 <= pg.x0) {
+          next.push_back(Group{rx0, rx1, y, 1}); ++j;
+        } else if (pg.x0 == rx0 && pg.x1 == rx1) {
+          next.push_back(Group{pg.x0, pg.x1, pg.startY, pg.height + 1});
+          ++i; ++j;
+        } else {
+          emitBlock(z, pg); ++i;
+        }
+      }
+      while (i < prev.size()) emitBlock(z, prev[i++]);
+      while (j < currRuns.size()) {
+        const int rx0 = currRuns[j].first;
+        const int rx1 = currRuns[j].second; ++j;
+        next.push_back(Group{rx0, rx1, y, 1});
+      }
+      prev.swap(next);
+    }
+    // flush leftovers at end of slice
+    for (const auto& g : prev) emitBlock(z, g);
+  }
+
+  return out;
+}
+
 // ---------------- StreamRLEXY implementation ----------------
 
 StreamRLEXY::StreamRLEXY(int X, int Y, int Z, int PX, int PY,

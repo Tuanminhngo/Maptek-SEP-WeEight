@@ -34,6 +34,13 @@ class MaxRectStrat : public GroupingStrategy {
                                              uint32_t labelId) override;
 };
 
+// RLE along X + vertical merge within a single ParentBlock (dz=1 per slice)
+class RLEXYStrat : public GroupingStrategy {
+ public:
+  std::vector<Model::BlockDesc> cover(const Model::ParentBlock& parent,
+                                      uint32_t labelId) override;
+};
+
 // Streaming strategy for fast RLE along X and vertical merge within
 // parent-Y boundaries. Consumed by IO's streaming reader.
 class StreamRLEXY {
