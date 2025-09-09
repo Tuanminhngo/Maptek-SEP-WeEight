@@ -11,12 +11,19 @@ int main() {
     std::cin.tie(nullptr);
     IO::Endpoint ep(std::cin, std::cout);
     ep.init();
-    // Fast streaming path: Strategy-driven RLE along X with vertical merges
-    ep.emitRLEXY();
 
+    // Function for fast streaming of RLE algorithm
+    // If you want to use another algorithm or use normal parent block grouping for RLE 
+    // just comment the code below and use hasNextParent (see below)
+    ep.emitRLEXY();  
+
+
+    // Uncomment the code below to use other algorithm
+
+    /******************************************************************************* */
     // const Model::LabelTable& lt = ep.labels();
 
-    // Pick your algorithm here:
+    // Pick your algorithm here (pick 1 only):
     // Strategy::DefaultStrat strat;
     // Strategy::GreedyStrat strat;
     // Strategy::MaxRectStrat strat;
@@ -29,6 +36,8 @@ int main() {
     //         ep.write(blocks);
     //     }
     // }
+    /******************************************************************************* */
+
     ep.flush();
     return 0;
 }
