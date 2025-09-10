@@ -1,8 +1,9 @@
 CXX := g++
-CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -Iinclude
+# Enable higher optimization and NDEBUG in release-like builds
+CXXFLAGS := -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Iinclude
 
 WINXX := x86_64-w64-mingw32-g++
-WINXXFLAGS := -std=c++17 -O2 -Wall -Wextra -Iinclude
+WINXXFLAGS := -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Iinclude
 WINLDFLAGS := -static -static-libstdc++ -static-libgcc
 
 SRC := src/Model.cpp src/IO.cpp src/Strategy.cpp
@@ -16,8 +17,8 @@ TESTSRC_STRAT := tests/test_strategy.cpp
 BUILDBIN := bin/compressor
 BUILDSRC := src/main.cpp
 
-BUILDEXEMAC := bin/compressor1.exe
-BUILDEXE := bin/compressor2.exe
+BUILDEXEMAC := bin/compressor-mac.exe
+BUILDEXE := bin/compressor-win.exe
 
 all: $(TESTBIN_FILE) $(TESTBIN_STRAT)
 

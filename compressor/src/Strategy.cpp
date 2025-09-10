@@ -5,11 +5,14 @@ using Model::ParentBlock;
 
 namespace {
 
-static std::vector<uint8_t> buildMaskSlice(const ParentBlock& parent,
-                                           uint32_t labelId, int z) {
+static void buildMaskSlice(const ParentBlock& parent,
+                           uint32_t labelId, int z,
+                           std::vector<uint8_t>& mask) {
   const int W = parent.sizeX();
   const int H = parent.sizeY();
-  std::vector<uint8_t> mask(static_cast<size_t>(W * H), 0);
+  const size_t N = static_cast<size_t>(W * H);
+  if (mask.size() != N) mask.assign(N, 0);
+  else std::fill(mask.begin(), mask.end(), 0);
 
   for (int y = 0; y < H; ++y) {
     for (int x = 0; x < W; ++x) {
@@ -17,7 +20,6 @@ static std::vector<uint8_t> buildMaskSlice(const ParentBlock& parent,
           (parent.grid().at(x, y, z) == labelId) ? 1u : 0u;
     }
   }
-  return mask;
 }
 
 // Merge horizontal runs on a single row into [x0, x1) intervals where mask==1.
@@ -80,11 +82,12 @@ std::vector<BlockDesc> GreedyStrat::cover(const ParentBlock& parent,
   const int oz = parent.originZ();
 
   std::vector<uint8_t> mask;
+  out.reserve(static_cast<size_t>(W * H));
   std::vector<uint8_t> nextMaskRow(static_cast<size_t>(W), 0);
   std::vector<std::pair<int, int>> prevRuns, currRuns;
 
   for (int z = 0; z < D; ++z) {
-    mask = buildMaskSlice(parent, labelId, z);
+    buildMaskSlice(parent, labelId, z, mask);
 
     struct Group {
       int x0, x1;
@@ -184,5 +187,172 @@ std::vector<BlockDesc> MaxRectStrat::cover(const ParentBlock& parent,
                                            uint32_t labelId) {
   GreedyStrat greedy;
   return greedy.cover(parent, labelId);
+}
+
+// RLEXYStrat: process within a single ParentBlock
+std::vector<BlockDesc> RLEXYStrat::cover(const ParentBlock& parent,
+                                         uint32_t labelId) {
+  std::vector<BlockDesc> out;
+  const int W = parent.sizeX();
+  const int H = parent.sizeY();
+  const int D = parent.sizeZ();
+
+  const int ox = parent.originX();
+  const int oy = parent.originY();
+  const int oz = parent.originZ();
+
+  // Groups active while scanning rows, per z-slice
+  struct Group { int x0, x1, startY, height; };
+  std::vector<Group> prev, next;
+  std::vector<std::pair<int,int>> currRuns;
+  currRuns.reserve(static_cast<size_t>(W));
+
+  auto emitBlock = [&](int z, const Group& g) {
+    const int gx = g.x0;
+    const int gy = g.startY;
+    const int dx = g.x1 - g.x0;
+    const int dy = g.height;
+    if (dx > 0 && dy > 0) {
+      out.push_back(BlockDesc{ox + gx, oy + gy, oz + z, dx, dy, 1, labelId});
+    }
+  };
+
+  for (int z = 0; z < D; ++z) {
+    prev.clear();
+    for (int y = 0; y < H; ++y) {
+      // Build runs along X for this row and labelId
+      currRuns.clear();
+      int x = 0;
+      while (x < W) {
+        // skip non-matching
+        while (x < W && parent.grid().at(x, y, z) != labelId) ++x;
+        if (x >= W) break;
+        int x0 = x;
+        while (x < W && parent.grid().at(x, y, z) == labelId) ++x;
+        int x1 = x;
+        currRuns.emplace_back(x0, x1);
+      }
+
+      // Merge with prev active groups
+      next.clear();
+      size_t i = 0, j = 0;
+      while (i < prev.size() && j < currRuns.size()) {
+        const Group& pg = prev[i];
+        const auto& cr = currRuns[j];
+        const int rx0 = cr.first, rx1 = cr.second;
+        if (pg.x1 <= rx0) {
+          emitBlock(z, pg); ++i;
+        } else if (rx1 <= pg.x0) {
+          next.push_back(Group{rx0, rx1, y, 1}); ++j;
+        } else if (pg.x0 == rx0 && pg.x1 == rx1) {
+          next.push_back(Group{pg.x0, pg.x1, pg.startY, pg.height + 1});
+          ++i; ++j;
+        } else {
+          emitBlock(z, pg); ++i;
+        }
+      }
+      while (i < prev.size()) emitBlock(z, prev[i++]);
+      while (j < currRuns.size()) {
+        const int rx0 = currRuns[j].first;
+        const int rx1 = currRuns[j].second; ++j;
+        next.push_back(Group{rx0, rx1, y, 1});
+      }
+      prev.swap(next);
+    }
+    // flush leftovers at end of slice
+    for (const auto& g : prev) emitBlock(z, g);
+  }
+
+  return out;
+}
+
+// ---------------- StreamRLEXY implementation ----------------
+
+StreamRLEXY::StreamRLEXY(int X, int Y, int Z, int PX, int PY,
+                         const Model::LabelTable& labels)
+    : labels_(labels), X_(X), Y_(Y), Z_(Z), PX_(PX), PY_(PY) {
+  numNx_ = (PX_ > 0) ? (X_ / PX_) : 0;
+  active_.assign(static_cast<size_t>(numNx_), {});
+  nextActive_.assign(static_cast<size_t>(numNx_), {});
+  currRuns_.assign(static_cast<size_t>(numNx_), {});
+}
+
+void StreamRLEXY::buildRunsForRow(const std::string& row) {
+  for (int nx = 0; nx < numNx_; ++nx) currRuns_[static_cast<size_t>(nx)].clear();
+
+  int x = 0;
+  while (x < X_) {
+    const unsigned char t = static_cast<unsigned char>(row[static_cast<size_t>(x)]);
+    const uint32_t labelId = labels_.getId(static_cast<char>(t));
+    int x0 = x;
+    do { ++x; } while (x < X_ && static_cast<unsigned char>(row[static_cast<size_t>(x)]) == t);
+    int x1 = x;  // [x0, x1)
+
+    // Slice the run at parent-X boundaries
+    int s = x0;
+    while (s < x1) {
+      const int nx = s / PX_;
+      const int boundary = (nx + 1) * PX_;
+      const int segEnd = (x1 < boundary ? x1 : boundary);
+      currRuns_[static_cast<size_t>(nx)].push_back(Run{s, segEnd, labelId});
+      s = segEnd;
+    }
+  }
+}
+
+void StreamRLEXY::mergeRow(int z, int y, std::vector<Model::BlockDesc>& out) {
+  for (int nx = 0; nx < numNx_; ++nx) {
+    auto& prev = active_[static_cast<size_t>(nx)];
+    auto& next = nextActive_[static_cast<size_t>(nx)];
+    auto& cur  = currRuns_[static_cast<size_t>(nx)];
+    next.clear();
+
+    size_t i = 0, j = 0;
+    while (i < prev.size() && j < cur.size()) {
+      const Group& pg = prev[i];
+      const Run&   cr = cur[j];
+      if (pg.x1 <= cr.x0) {
+        out.push_back(toBlock(z, pg));
+        ++i;
+      } else if (cr.x1 <= pg.x0) {
+        next.push_back(Group{cr.x0, cr.x1, y, 1, cr.labelId});
+        ++j;
+      } else if (pg.labelId == cr.labelId && pg.x0 == cr.x0 && pg.x1 == cr.x1) {
+        next.push_back(Group{pg.x0, pg.x1, pg.startY, pg.height + 1, pg.labelId});
+        ++i; ++j;
+      } else {
+        out.push_back(toBlock(z, pg));
+        ++i;
+      }
+    }
+    while (i < prev.size()) { out.push_back(toBlock(z, prev[i++])); }
+    while (j < cur.size())  { const Run& cr = cur[j++]; next.push_back(Group{cr.x0, cr.x1, y, 1, cr.labelId}); }
+
+    prev.swap(next);
+  }
+}
+
+void StreamRLEXY::flushStripeEnd(int z, std::vector<Model::BlockDesc>& out) {
+  for (int nx = 0; nx < numNx_; ++nx) {
+    for (const auto& pg : active_[static_cast<size_t>(nx)]) {
+      out.push_back(toBlock(z, pg));
+    }
+    active_[static_cast<size_t>(nx)].clear();
+  }
+}
+
+void StreamRLEXY::onRow(int z, int y, const std::string& row,
+                        std::vector<Model::BlockDesc>& out) {
+  buildRunsForRow(row);
+  mergeRow(z, y, out);
+  // End of parent-Y stripe: flush
+  if (PY_ > 0 && y % PY_ == PY_ - 1) {
+    flushStripeEnd(z, out);
+  }
+}
+
+void StreamRLEXY::onSliceEnd(int z, std::vector<Model::BlockDesc>& out) {
+  // Defensive: ensure no carry-over groups across slices
+  flushStripeEnd(z, out);
 }
 }  // namespace Strategy
