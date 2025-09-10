@@ -1,171 +1,151 @@
 #include "Strategy.hpp"
-
-#include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
+#include <algorithm>
+#include <charconv>
+#include <stdexcept>
 
+using namespace std;
+
+// ------------------------------ RLEX (baseline) ------------------------------
+static void rlex_cover(const Model::ParentBlock& p,
+                       uint32_t labelId,
+                       std::vector<Model::BlockDesc>& out)
+{
+  const int PX=p.sizeX(), PY=p.sizeY(), PZ=p.sizeZ();
+  for(int lz=0; lz<PZ; ++lz){
+    for(int ly=0; ly<PY; ++ly){
+      int x=0;
+      while(x<PX){
+        if(p.tag(x,ly,lz) != labelId){ ++x; continue; }
+        int x0=x; ++x;
+        while(x<PX && p.tag(x,ly,lz)==labelId) ++x;
+        out.push_back({p.originX()+x0, p.originY()+ly, p.originZ()+lz,
+                       x-x0, 1, 1, (unsigned char)labelId});
+      }
+    }
+  }
+}
+
+// --------------- SER: Slice→Extrude with overlap-based tiling ----------------
+// This builds rectangles inside a slice by splitting on overlaps (good dy),
+// then stacks identical footprints across z (good dz). Parent boundaries
+// are respected because we operate on a single ParentBlock.
+
+struct Interval{ int x0,x1; }; // [x0,x1)
+struct ActiveRect{ int x0,x1,y0,dy; };
+
+static void ser_cover(const Model::ParentBlock& p,
+                      uint32_t labelId,
+                      std::vector<Model::BlockDesc>& out)
+{
+  const int PX=p.sizeX(), PY=p.sizeY(), PZ=p.sizeZ();
+
+  // Active footprints across z
+  struct Footprint{
+    uint16_t x0,x1,y0,dy;
+    bool operator==(const Footprint& o) const {
+      return x0==o.x0 && x1==o.x1 && y0==o.y0 && dy==o.dy;
+    }
+  };
+  struct FootHash{
+    size_t operator()(const Footprint& k) const noexcept{
+      size_t h=k.x0;
+      h=h*1315423911u ^ k.x1*2654435761u;
+      h=h*1315423911u ^ k.y0*2246822519u;
+      h=h*1315423911u ^ k.dy*3266489917u;
+      return h;
+    }
+  };
+  struct ACZ{ int x0,x1,y0,dy,z0,dz; };
+  unordered_map<Footprint, ACZ, FootHash> active;
+  vector<ACZ> finished; finished.reserve(128);
+
+  auto flush_not_touched = [&](const unordered_set<Footprint,FootHash>& touched){
+    vector<Footprint> dead; dead.reserve(active.size());
+    for(auto& kv : active) if(!touched.count(kv.first)){ finished.push_back(kv.second); dead.push_back(kv.first); }
+    for(auto& k: dead) active.erase(k);
+  };
+
+  // process each z slice inside the parent
+  for(int lz=0; lz<PZ; ++lz){
+    // Row tiler state for this slice (only our labelId)
+    vector<ActiveRect> act;
+    vector<array<int,4>> rects; rects.reserve(64); // {x0,x1,y0,dy}
+
+    auto see_row = [&](int y_local, const vector<Interval>& row){
+      size_t i=0,j=0; vector<ActiveRect> next; next.reserve(act.size()+row.size());
+      vector<Interval> cur=row;
+      while(i<act.size() || j<cur.size()){
+        if (j==cur.size() || (i<act.size() && act[i].x1 <= cur[j].x0)){
+          rects.push_back({act[i].x0, act[i].x1, act[i].y0, act[i].dy});
+          ++i; continue;
+        }
+        if (i==act.size() || (j<cur.size() && cur[j].x1 <= act[i].x0)){
+          next.push_back(ActiveRect{cur[j].x0, cur[j].x1, y_local, 1});
+          ++j; continue;
+        }
+        int l = max(act[i].x0, cur[j].x0);
+        int r = min(act[i].x1, cur[j].x1);
+        if (act[i].x0 < l) rects.push_back({act[i].x0, l, act[i].y0, act[i].dy});
+        if (cur[j].x0 < l) next.push_back(ActiveRect{cur[j].x0, l, y_local, 1});
+        next.push_back(ActiveRect{l, r, act[i].y0, act[i].dy+1});
+        if (r==act[i].x1) ++i; else act[i].x0 = r;
+        if (r==cur[j].x1) ++j; else cur[j].x0 = r;
+      }
+      act.swap(next);
+    };
+
+    // scan rows and feed intervals
+    for(int ly=0; ly<PY; ++ly){
+      vector<Interval> row; row.reserve(PX/2);
+      int x=0;
+      while(x<PX){
+        if(p.tag(x,ly,lz) != labelId){ ++x; continue; }
+        int x0=x; ++x; while(x<PX && p.tag(x,ly,lz)==labelId) ++x;
+        row.push_back(Interval{x0,x});
+      }
+      see_row(ly, row);
+      if (ly == PY-1){ // end of parent-Y block
+        for(auto& a: act) rects.push_back({a.x0,a.x1,a.y0,a.dy});
+        act.clear();
+      }
+    }
+
+    // extrude rects at this z
+    unordered_set<Footprint,FootHash> touched; touched.reserve(rects.size()*2+8);
+    for(auto r : rects){
+      Footprint fp{(uint16_t)r[0],(uint16_t)r[1],(uint16_t)r[2],(uint16_t)r[3]};
+      auto it = active.find(fp);
+      if(it==active.end()) active.emplace(fp, ACZ{r[0],r[1],r[2],r[3], lz,1});
+      else it->second.dz++;
+      touched.insert(fp);
+    }
+    rects.clear();
+    flush_not_touched(touched);
+  }
+
+  // end parent: flush remaining
+  for(auto& kv : active) finished.push_back(kv.second);
+  active.clear();
+
+  // emit
+  for(const auto& c : finished){
+    out.push_back({ p.originX()+c.x0, p.originY()+c.y0, p.originZ()+c.z0,
+                    c.x1-c.x0, c.dy, c.dz, (unsigned char)labelId });
+  }
+}
+
+// ------------------------------- Dispatcher ----------------------------------
 namespace Strategy {
-
-struct RectActive {
-  int x0, x1;
-  int y0, y1;  // inclusive span in Y
-};
-
-// Helper: finalize an active rect into local BlockDesc (z provided)
-static inline void finalize_rect(int z, uint16_t labelId, const RectActive& r,
-                                 std::vector<Model::BlockDesc>& out_local) {
-  Model::BlockDesc b;
-  b.x = r.x0;
-  b.y = r.y0;
-  b.z = z;
-  b.dx = r.x1 - r.x0 + 1;
-  b.dy = r.y1 - r.y0 + 1;
-  b.dz = 1;
-  b.labelId = labelId;
-  out_local.push_back(b);
+void cover(const Model::ParentBlock& parent,
+           uint32_t labelId,
+           std::vector<Model::BlockDesc>& out,
+           Kind algo,
+           const Options& /*opt*/,
+           Scratch& /*scratch*/)
+{
+  if (algo == Kind::RLEX) rlex_cover(parent, labelId, out);
+  else                    ser_cover(parent,  labelId, out);
 }
-
-// Z-stacking across consecutive slices for identical footprints
-static void z_stack_local(
-    const std::vector<Model::BlockDesc>& slice_rects_local,
-    std::vector<Model::BlockDesc>& out_local) {
-  struct Key {
-    int x, dx, y, dy;
-    bool operator==(const Key& o) const noexcept {
-      return x == o.x && dx == o.dx && y == o.y && dy == o.dy;
-    }
-  };
-  struct KeyHash {
-    size_t operator()(const Key& k) const noexcept {
-      uint64_t h = static_cast<uint64_t>(k.x) * 0x9e3779b185ebca87ull;
-      h ^= static_cast<uint64_t>(k.dx) + 0x9e3779b97f4a7c15ull + (h << 6) +
-           (h >> 2);
-      h ^= static_cast<uint64_t>(k.y) + 0x9e3779b97f4a7c15ull + (h << 6) +
-           (h >> 2);
-      h ^= static_cast<uint64_t>(k.dy) + 0x9e3779b97f4a7c15ull + (h << 6) +
-           (h >> 2);
-      return static_cast<size_t>(h);
-    }
-  };
-  struct Open {
-    Model::BlockDesc b;
-  };
-
-  std::unordered_map<Key, Open, KeyHash> open;  // local (clears each call)
-
-  for (const auto& r : slice_rects_local) {
-    Key k{r.x, r.dx, r.y, r.dy};
-    auto it = open.find(k);
-    if (it != open.end()) {
-      if (it->second.b.z + it->second.b.dz == r.z) {
-        it->second.b.dz += 1;
-      } else {
-        out_local.push_back(it->second.b);
-        it->second.b = r;
-      }
-    } else {
-      open.emplace(k, Open{r});
-    }
-  }
-  for (auto& kv : open) out_local.push_back(kv.second.b);
-}
-
-void RRCStrategy::cover(const Model::ParentBlock& pb, uint16_t labelId,
-                        std::vector<Model::BlockDesc>& out) {
-  const int SX = pb.sizeX(), SY = pb.sizeY(), SZ = pb.sizeZ();
-
-  // Quick presence check + uniform-label optimization
-  bool any = false;
-  bool all_this_label = true;
-  for (int z = 0; z < SZ; ++z) {
-    for (int y = 0; y < SY; ++y) {
-      for (int x = 0; x < SX; ++x) {
-        uint16_t id = pb.atLocal(x, y, z);
-        if (id == labelId)
-          any = true;
-        else
-          all_this_label = false;
-      }
-    }
-  }
-  if (!any) return;
-  if (opts_.fast_uniform_check && all_this_label) {
-    // Emit one local cuboid
-    Model::BlockDesc b;
-    b.x = 0;
-    b.y = 0;
-    b.z = 0;
-    b.dx = SX;
-    b.dy = SY;
-    b.dz = SZ;
-    b.labelId = labelId;
-    out.push_back(b);
-    return;
-  }
-
-  // Phase A+B: per-slice rectangles via run merging
-  std::vector<Model::BlockDesc> rects_local;
-  rects_local.reserve(SX * SY);  // rough
-
-  for (int z = 0; z < SZ; ++z) {
-    std::vector<RectActive> active;
-    for (int y = 0; y < SY; ++y) {
-      // Build runs in this row
-      std::vector<std::pair<int, int>> runs;  // [x0,x1] inclusive
-      int x = 0;
-      while (x < SX) {
-        if (pb.atLocal(x, y, z) == labelId) {
-          int x0 = x;
-          while (x < SX && pb.atLocal(x, y, z) == labelId) ++x;
-          runs.emplace_back(x0, x - 1);
-        } else {
-          ++x;
-        }
-      }
-
-      // Match actives with runs (exact x-span)
-      std::vector<RectActive> next_active;
-      std::vector<char> used(runs.size(), 0);
-      next_active.reserve(std::max<size_t>(active.size(), runs.size()));
-
-      for (const auto& ar : active) {
-        bool extended = false;
-        for (size_t i = 0; i < runs.size(); ++i) {
-          if (used[i]) continue;
-          if (runs[i].first == ar.x0 && runs[i].second == ar.x1) {
-            // extend
-            RectActive e = ar;
-            e.y1 = y;
-            next_active.push_back(e);
-            used[i] = 1;
-            extended = true;
-            break;
-          }
-        }
-        if (!extended) {
-          finalize_rect(z, labelId, ar, rects_local);
-        }
-      }
-
-      // Start new actives for unused runs
-      for (size_t i = 0; i < runs.size(); ++i)
-        if (!used[i]) {
-          RectActive nr{runs[i].first, runs[i].second, y, y};
-          next_active.push_back(nr);
-        }
-
-      active.swap(next_active);
-    }
-
-    // Finalize remaining actives at this z
-    for (const auto& ar : active) finalize_rect(z, labelId, ar, rects_local);
-  }
-
-  // Phase C: Z-stacking into local cuboids
-  std::vector<Model::BlockDesc> cuboids_local;
-  cuboids_local.reserve(rects_local.size());
-  z_stack_local(rects_local, cuboids_local);
-  // Output local cuboids for this label (caller will translate to absolute)
-  out.insert(out.end(), cuboids_local.begin(), cuboids_local.end());
-}
-
-}  // namespace Strategy
+} // namespace Strategy

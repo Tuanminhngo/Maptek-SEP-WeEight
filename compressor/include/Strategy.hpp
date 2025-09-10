@@ -5,39 +5,22 @@
 
 namespace Strategy {
 
-/** Abstract interface: write all cuboids of `labelId` within `pb` into `out`. */
-class GroupingStrategy {
-public:
-  virtual ~GroupingStrategy() = default;
+enum class Kind { RLEX, SER };
 
-  virtual void cover(const Model::ParentBlock& pb,
-                     uint16_t labelId,
-                     std::vector<Model::BlockDesc>& out) = 0;
+struct Options {
+  int tiny_thresh = 24;         // not used by RLEX; SER ignores for now
 };
 
-/** Options toggling cheap compression improvements. */
-struct RRCOptions {
-  bool dual_axis_rectangles{true};  // try X-first and Y-first per slice, choose fewer rects
-  bool fast_uniform_check{true};    // detect uniform parents and emit one cuboid
-  bool adjacent_fuse{true};         // fuse siblings along X/Y with identical faces
+struct Scratch {
+  // reusable buffers (per-thread if you parallelize)
+  // kept empty for now — SER uses local vectors
 };
 
-/**
- * RRCStrategy: 3-phase per-parent compaction
- *  - X-runs per row
- *  - 2D rectangle merge per slice (optionally dual-axis)
- *  - Z stacking into cuboids
- */
-class RRCStrategy final : public GroupingStrategy {
-public:
-  explicit RRCStrategy(const RRCOptions& opts = {}) : opts_(opts) {}
-
-  void cover(const Model::ParentBlock& pb,
-             uint16_t labelId,
-             std::vector<Model::BlockDesc>& out) override;
-
-private:
-  RRCOptions opts_;
-};
+void cover(const Model::ParentBlock& parent,
+           uint32_t labelId,
+           std::vector<Model::BlockDesc>& out,
+           Kind algo,
+           const Options& opt,
+           Scratch& scratch);
 
 } // namespace Strategy

@@ -1,166 +1,110 @@
 #include "IO.hpp"
 #include <sstream>
+#include <charconv>
+#include <stdexcept>
 #include <iostream>
-#include <string>
-#include <algorithm>
-#include <cctype>
+#include <memory>
+using namespace IO;
 
-namespace IO {
-
-static inline std::string trim(const std::string& s) {
-  size_t a = s.find_first_not_of(" \t\r\n");
-  if (a == std::string::npos) return "";
-  size_t b = s.find_last_not_of(" \t\r\n");
-  return s.substr(a, b - a + 1);
-}
-
-bool Endpoint::init() {
-  if (!in_ || !out_) return false;
-  return init(*in_, *out_);
-}
-
-bool Endpoint::init(std::istream& in, std::ostream& out) {
-  in_  = &in;
-  out_ = &out;
-  if (!parseHeader(in)) return false;
-  if (!parseLabelTable(in)) return false;
-  if (!parseGrid(in)) return false;
-  resetParentIterator();
+bool Reader::readHeader(){
+  std::string s; if(!std::getline(std::cin, s)) return false;
+  for(char& c: s) if(c==',') c=' ';
+  std::istringstream ss(s);
+  if(!(ss>>H.X>>H.Y>>H.Z>>H.PX>>H.PY>>H.PZ)) return false;
+  if(H.X<=0||H.Y<=0||H.Z<=0||H.PX<=0||H.PY<=0||H.PZ<=0)
+    throw std::runtime_error("Bad header values");
+  if(H.X%H.PX||H.Y%H.PY||H.Z%H.PZ)
+    throw std::runtime_error("X,Y,Z must be multiples of PX,PY,PZ");
   return true;
 }
 
-bool Endpoint::parseHeader(std::istream& in) {
+void Reader::readTagTable(){
   std::string line;
-  if (!std::getline(in, line)) return false;
-  line = trim(line);
-  if (line.empty()) return false;
-
-  // Expect: W,H,D[,parentX,parentY,parentZ]
-  std::vector<int> vals;
-  std::stringstream ss(line);
-  while (ss.good()) {
-    std::string tok;
-    if (!std::getline(ss, tok, ',')) break;
-    tok = trim(tok);
-    if (!tok.empty()) vals.push_back(std::stoi(tok));
+  while(std::getline(std::cin, line)){
+    if(!line.empty() && line.back()=='\r') line.pop_back();
+    if(line.empty()) break; // blank line ends table
+    auto c = line.find(',');
+    if (c==std::string::npos || c==0 || c+1>=line.size()) continue;
+    unsigned char tag = (unsigned char)line[0];
+    size_t i=c+1; if(i<line.size() && line[i]==' ') ++i;
+    labels.add((char)tag, line.substr(i));   // <-- add(...) not set(...)
   }
-  if (vals.size() != 3 && vals.size() != 6) return false;
-
-  header_.W = vals[0]; header_.H = vals[1]; header_.D = vals[2];
-  if (vals.size() == 6) {
-    header_.parentX = vals[3]; header_.parentY = vals[4]; header_.parentZ = vals[5];
-  }
-  map_ = Model::Grid(header_.W, header_.H, header_.D);
-  return true;
 }
 
-bool Endpoint::parseLabelTable(std::istream& in) {
-  std::string line;
-  while (std::getline(in, line)) {
-    line = trim(line);
-    if (line.empty()) break; // blank line ends table
-    // Format: "<char>, <Name...>"
-    size_t comma = line.find(',');
-    if (comma == std::string::npos || comma == 0) return false;
-
-    // tag is the last non-space char before comma
-    size_t i = comma;
-    while (i > 0 && std::isspace(static_cast<unsigned char>(line[i-1]))) --i;
-    if (i == 0) return false;
-    char tag = line[i-1];
-
-    std::string name = trim(line.substr(comma + 1));
-    if (name.empty()) return false;
-    labels_.add(tag, name);
-  }
-  return true;
-}
-
-bool Endpoint::parseGrid(std::istream& in) {
-  std::string line;
-  const uint32_t W = header_.W, H = header_.H, D = header_.D;
-  for (uint32_t z = 0; z < D; ++z) {
-    for (uint32_t y = 0; y < H; ++y) {
-      // Skip empty lines; accept lines with >= W characters
-      do {
-        if (!std::getline(in, line)) return false;
-        line = trim(line);
-      } while (line.empty());
-
-      if (line.size() < W) return false;
-      for (uint32_t x = 0; x < W; ++x) {
-        char tag = line[x];
-        uint16_t id = labels_.getId(tag);
-        map_.at(x, y, z) = id; // unknown tags remain 0xFFFF; strategies ignore
-      }
+// Read PZ slices (each = Y rows, row length X). Optional blank line after slice.
+bool Reader::readSlab(std::vector<std::vector<std::string>>& SL){
+  SL.assign(H.PZ, std::vector<std::string>(H.Y));
+  std::string row;
+  for(int kz=0; kz<H.PZ; ++kz){
+    // Skip leading empties before first row of this slice
+    while(true){
+      if(!std::getline(std::cin, row)) return false;
+      if(!row.empty() && row.back()=='\r') row.pop_back();
+      if(!row.empty()) break;
     }
-    // Optional blank line between slices: ignore if present
+    if((int)row.size()!=H.X) throw std::runtime_error("Row 0 length != X");
+    SL[kz][0] = row;
+    for(int y=1; y<H.Y; ++y){
+      if(!std::getline(std::cin, row)) throw std::runtime_error("Unexpected EOF in slice");
+      if(!row.empty() && row.back()=='\r') row.pop_back();
+      if((int)row.size()!=H.X) throw std::runtime_error("Row length != X");
+      SL[kz][y] = row;
+    }
+    // consume optional blank separator
+    std::string blank; std::getline(std::cin, blank);
   }
   return true;
 }
 
-void Endpoint::resetParentIterator() {
-  parents_x_ = (header_.W + header_.parentX - 1) / header_.parentX;
-  parents_y_ = (header_.H + header_.parentY - 1) / header_.parentY;
-  parents_z_ = (header_.D + header_.parentZ - 1) / header_.parentZ;
-  cur_px_ = 0; cur_py_ = 0; cur_pz_ = -1; // not started
-}
+// Assemble a parent 'Grid' from the slab strings, and return a ParentBlock that
+// references an internal, reusable work grid. Safe because we process each
+// parent immediately after makeParent returns.
+Model::ParentBlock Reader::makeParent(const std::vector<std::vector<std::string>>& SL,
+                                      int ix, int iy, int gz) const {
+  const int originX = ix*H.PX;
+  const int originY = iy*H.PY;
+  const int originZ = gz;
 
-bool Endpoint::hasNextParent() const noexcept {
-  if (parents_x_ == 0 || parents_y_ == 0 || parents_z_ == 0) return false;
-  if (cur_pz_ == -1) return true; // first one exists
+  // Reusable work buffer with the correct dims
+  static std::unique_ptr<Model::Grid> work;
+  if(!work || work->width()!=H.PX || work->height()!=H.PY || work->depth()!=H.PZ){
+    work = std::make_unique<Model::Grid>(H.PX, H.PY, H.PZ);
+  }
 
-  int npz = cur_pz_ + 1;
-  int npy = cur_py_;
-  int npx = cur_px_;
-  if (npz >= parents_z_) { npz = 0; ++npy; }
-  if (npy >= parents_y_) { npy = 0; ++npx; }
-  return (npx < parents_x_);
-}
-
-Model::ParentBlock Endpoint::nextParent() {
-  if (cur_pz_ == -1) {
-    cur_px_ = 0; cur_py_ = 0; cur_pz_ = 0;
-  } else {
-    ++cur_pz_;
-    if (cur_pz_ >= parents_z_) {
-      cur_pz_ = 0;
-      ++cur_py_;
-      if (cur_py_ >= parents_y_) {
-        cur_py_ = 0;
-        ++cur_px_;
+  // Fill work grid from the slab strings
+  for(int dz=0; dz<H.PZ; ++dz){
+    for(int dy=0; dy<H.PY; ++dy){
+      const std::string& row = SL[dz][originY + dy];
+      for(int dx=0; dx<H.PX; ++dx){
+        unsigned char tag = (unsigned char)row[originX + dx];
+        (*work).at(dx, dy, dz) = labels.getId((char)tag);
       }
     }
   }
-  const int32_t ox = cur_px_ * static_cast<int32_t>(header_.parentX);
-  const int32_t oy = cur_py_ * static_cast<int32_t>(header_.parentY);
-  const int32_t oz = cur_pz_ * static_cast<int32_t>(header_.parentZ);
-  const int32_t sx = std::min<int32_t>(header_.parentX, static_cast<int32_t>(header_.W) - ox);
-  const int32_t sy = std::min<int32_t>(header_.parentY, static_cast<int32_t>(header_.H) - oy);
-  const int32_t sz = std::min<int32_t>(header_.parentZ, static_cast<int32_t>(header_.D) - oz);
-  return Model::ParentBlock(&map_, ox, oy, oz, sx, sy, sz);
+
+  return Model::ParentBlock(originX, originY, originZ, *work);
 }
 
-void Endpoint::writeChunk(const std::vector<Model::BlockDesc>& blocks) const {
-  // Count line
-  (*out_) << blocks.size() << '\n';
-  // Then N lines: x,y,z,dx,dy,dz,token
-  for (const auto& b : blocks) {
-    char token = labels_.getTag(b.labelId);
-    (*out_) << b.x << ',' << b.y << ',' << b.z << ','
-            << b.dx << ',' << b.dy << ',' << b.dz << ','
-            << token << '\n';
+void IO::writeCSV(const std::vector<Model::BlockDesc>& v,
+                  const Model::LabelTable& labels){
+  std::string out; out.reserve(1<<20);
+  auto append_int=[&](int val){
+    char tmp[32]; auto [p,ec]=std::to_chars(tmp, tmp+sizeof(tmp), val);
+    out.append(tmp, (size_t)(p-tmp));
+  };
+  for(const auto& b: v){
+    append_int(b.x);  out.push_back(',');
+    append_int(b.y);  out.push_back(',');
+    append_int(b.z);  out.push_back(',');
+    append_int(b.dx); out.push_back(',');
+    append_int(b.dy); out.push_back(',');
+    append_int(b.dz); out.push_back(',');
+    out.append(labels.getName(b.labelId));   // <-- getName(...) not name_of(...)
+    out.push_back('\n');
+    if(out.size() >= (1u<<20)){
+      std::cout.write(out.data(), (std::streamsize)out.size());
+      out.clear(); out.reserve(1<<20);
+    }
   }
+  if(!out.empty()) std::cout.write(out.data(), (std::streamsize)out.size());
 }
-
-// Legacy writer (name at the end). Not used by chunked evaluator.
-void Endpoint::write(const std::vector<Model::BlockDesc>& blocks) {
-  for (const auto& b : blocks) {
-    const std::string& name = labels_.getName(b.labelId);
-    (*out_) << b.x << ',' << b.y << ',' << b.z << ','
-            << b.dx << ',' << b.dy << ',' << b.dz << ','
-            << name << '\n';
-  }
-}
-
-} // namespace IO
