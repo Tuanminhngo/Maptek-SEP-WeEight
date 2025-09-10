@@ -1,41 +1,31 @@
 CXX := g++
-# Enable higher optimization and NDEBUG in release-like builds
 CXXFLAGS := -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Iinclude
 
-WINXX := x86_64-w64-mingw32-g++
-WINXXFLAGS := -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Iinclude
+# Mingw-w64 cross toolchains
+WIN64XX := x86_64-w64-mingw32-g++
+WIN32XX := i686-w64-mingw32-g++
+
+WINFLAGS := -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Iinclude
 WINLDFLAGS := -static -static-libstdc++ -static-libgcc
 
 SRC := src/Model.cpp src/IO.cpp src/Strategy.cpp
-
-TESTBIN_FILE := bin/test_from_file
-TESTSRC_FILE := tests/test_from_file.cpp
-
-TESTBIN_STRAT := bin/test_strategy
-TESTSRC_STRAT := tests/test_strategy.cpp
-
-BUILDBIN := bin/compressor
 BUILDSRC := src/main.cpp
 
-BUILDEXEMAC := bin/compressor-mac.exe
-BUILDEXE := bin/compressor-win.exe
+# Binaries
+BUILDBIN := bin/compressor               # native
+WIN64BIN := bin/compressor-win64.exe
+WIN32BIN := bin/compressor-win32.exe
 
-all: $(TESTBIN_FILE) $(TESTBIN_STRAT)
-
-$(TESTBIN_FILE): $(SRC) $(TESTSRC_FILE) | bin
-	$(CXX) $(CXXFLAGS) -o $@ $(SRC) $(TESTSRC_FILE)
-
-$(TESTBIN_STRAT): $(SRC) $(TESTSRC_STRAT) | bin
-	$(CXX) $(CXXFLAGS) -o $@ $(SRC) $(TESTSRC_STRAT)
+all: $(BUILDBIN)
 
 $(BUILDBIN): $(SRC) $(BUILDSRC) | bin
 	$(CXX) $(CXXFLAGS) -o $@ $(SRC) $(BUILDSRC)
 
-$(BUILDEXEMAC): $(SRC) $(BUILDSRC) | bin
-	$(WINXX) $(WINXXFLAGS) $(SRC) $(BUILDSRC) $(WINLDFLAGS) -o $@ 
+$(WIN64BIN): $(SRC) $(BUILDSRC) | bin
+	$(WIN64XX) $(WINFLAGS) -o $@ $(SRC) $(BUILDSRC) $(WINLDFLAGS)
 
-$(BUILDEXE): $(SRC) $(BUILDSRC) | bin
-	$(CXX) $(CXXFLAGS) $(SRC) $(BUILDSRC) $(WINLDFLAGS) -o $@
+$(WIN32BIN): $(SRC) $(BUILDSRC) | bin
+	$(WIN32XX) $(WINFLAGS) -o $@ $(SRC) $(BUILDSRC) $(WINLDFLAGS)
 
 bin:
 	mkdir -p bin
@@ -44,16 +34,11 @@ clean:
 	rm -rf bin
 	rm -f tests/output.txt
 
-test-file: $(TESTBIN_FILE)
-	$(TESTBIN_FILE)
+.PHONY: build-exe build-exe32 run test-file test-strategy clean
 
-test-strategy: $(TESTBIN_STRAT)
-	$(TESTBIN_STRAT)
+# convenience targets
+build-exe: $(WIN64BIN)
+build-exe32: $(WIN32BIN)
 
-run: $(BUILDBIN) 
+run: $(BUILDBIN)
 	cat tests/input.txt | $(BUILDBIN) > tests/output.txt
-
-build-exe: $(BUILDEXE)
-
-build-exe-mac: $(BUILDEXEMAC)
-	
