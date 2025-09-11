@@ -13,7 +13,7 @@ BUILDSRC := src/main.cpp
 
 # Binaries
 BUILDBIN := bin/compressor               # native
-WIN64BIN := bin/compressor2.exe
+WIN64BIN := bin/compressor2-SER.exe
 WIN32BIN := bin/compressor1.exe
 
 all: $(BUILDBIN)

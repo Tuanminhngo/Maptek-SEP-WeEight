@@ -102,6 +102,13 @@ private:
   std::vector<std::vector<Run>>   currRuns_;   // runs detected in current row
 };
 
+class SERStrat : public GroupingStrategy {
+public:
+  std::vector<Model::BlockDesc>
+  cover(const Model::ParentBlock& parent, uint32_t labelId) override;
+};
+
+
 } // namespace Strategy
 
 #endif // STRATEGY_HPP

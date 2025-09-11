@@ -1,4 +1,5 @@
 #include "../include/Strategy.hpp"
+#include <algorithm>
 
 using Model::BlockDesc;
 using Model::ParentBlock;
@@ -40,6 +41,44 @@ static void findRowRuns(const std::vector<uint8_t>& maskRow, int W,
 }  // namespace
 
 namespace Strategy {
+
+// === SERStrat ===
+// Build dz=1 rectangles within each slice (via Greedy),
+// then merge along Z when (x,y,dx,dy,label) match on consecutive slices.
+std::vector<BlockDesc> SERStrat::cover(const ParentBlock& parent, uint32_t labelId) {
+  GreedyStrat greedy;
+  std::vector<BlockDesc> base = greedy.cover(parent, labelId);
+  if (base.empty()) return base;
+
+  // Sort so blocks that can be merged along Z are adjacent
+  std::sort(base.begin(), base.end(), [](const BlockDesc& a, const BlockDesc& b) {
+    if (a.x != b.x) return a.x < b.x;
+    if (a.y != b.y) return a.y < b.y;
+    if (a.dx != b.dx) return a.dx < b.dx;
+    if (a.dy != b.dy) return a.dy < b.dy;
+    if (a.labelId != b.labelId) return a.labelId < b.labelId;
+    return a.z < b.z;
+  });
+
+  std::vector<BlockDesc> out;
+  out.reserve(base.size());
+  BlockDesc cur = base[0]; // dz == 1
+
+  for (size_t i = 1; i < base.size(); ++i) {
+    const BlockDesc& b = base[i];
+    const bool sameXY = (cur.x == b.x && cur.y == b.y &&
+                         cur.dx == b.dx && cur.dy == b.dy);
+    if (sameXY && cur.labelId == b.labelId && b.z == cur.z + cur.dz) {
+      // consecutive layer → extend along Z
+      cur.dz += b.dz;  // (b.dz is 1 from Greedy)
+    } else {
+      out.push_back(cur);
+      cur = b;
+    }
+  }
+  out.push_back(cur);
+  return out;
+}
 
 std::vector<BlockDesc> DefaultStrat::cover(const ParentBlock& parent,
                                            uint32_t labelId) {
@@ -356,3 +395,4 @@ void StreamRLEXY::onSliceEnd(int z, std::vector<Model::BlockDesc>& out) {
   flushStripeEnd(z, out);
 }
 }  // namespace Strategy
+
