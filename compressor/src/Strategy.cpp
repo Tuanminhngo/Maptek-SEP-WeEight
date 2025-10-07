@@ -351,4 +351,5 @@ std::vector<BlockDesc> MaxRectStrat::cover(const ParentBlock& parent,
   }
   return out;
 }
+
 }  // namespace Strategy
