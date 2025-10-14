@@ -36,6 +36,13 @@ $(BUILDEXEMAC): $(SRC) $(BUILDSRC) | bin
 $(BUILDEXE): $(SRC) $(BUILDSRC) | bin
 	$(CXX) $(CXXFLAGS) $(SRC) $(BUILDSRC) $(WINLDFLAGS) -o $@
 
+build-windows: bin/compressor_win.exe
+
+bin/compressor_win.exe: $(SRC) $(BUILDSRC) | bin
+	$(WINXX) $(WINXXFLAGS) $(SRC) $(BUILDSRC) $(WINLDFLAGS) -o $@
+
+.PHONY: build-windows
+
 bin:
 	mkdir -p bin
 

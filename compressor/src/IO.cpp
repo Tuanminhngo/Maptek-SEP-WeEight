@@ -109,8 +109,7 @@ void Endpoint::init() {
                                  ", y=" + std::to_string(y));
       for (int x = 0; x < W; ++x) {
         const char tag = line[x];
-        const uint32_t id = labelTable_->getId(tag);  \
-        const int yy = H - 1 - y;
+        const uint32_t id = labelTable_->getId(tag);
         mapModel_->at(x, y, z) = id;
       }
     }
@@ -129,11 +128,8 @@ void Endpoint::init() {
 
 bool Endpoint::hasNextParent() const {
   if (!initialized_) return false;
-  const int W = mapModel_->width(), H = mapModel_->height(),
-            D = mapModel_->depth();
-  const int PX = parentX_, PY = parentY_, PZ = parentZ_;
-  const int maxNx = W / PX;
-  const int maxNy = H / PY;
+  const int D = mapModel_->depth();
+  const int PZ = parentZ_;
   const int maxNz = D / PZ;
 
   if (nz_ < maxNz) return true;

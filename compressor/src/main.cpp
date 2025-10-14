@@ -11,13 +11,13 @@ int main() {
     ep.init();
 
     const Model::LabelTable& lt = ep.labels();
-    Strategy::GreedyStrat greedy;
+    Strategy::MaxRectStrat strat;
 
     while (ep.hasNextParent()) {
         Model::ParentBlock parent = ep.nextParent();
         
         for (uint32_t labelId = 0; labelId < lt.size(); ++labelId) {
-            std::vector<BlockDesc> blocks = greedy.cover(parent, labelId);
+            std::vector<BlockDesc> blocks = strat.cover(parent, labelId);
             
             ep.write(blocks);
         }
