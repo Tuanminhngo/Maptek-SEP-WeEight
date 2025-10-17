@@ -10,7 +10,9 @@ std::vector<uint8_t> buildMaskSlice(const ParentBlock& parent, uint32_t labelId,
                                     int z) {
   const int W = parent.sizeX();
   const int H = parent.sizeY();
-  std::vector<uint8_t> mask(static_cast<size_t>(W * H), 0);
+  const size_t N = static_cast<size_t>(W * H);
+  if (mask.size() != N) mask.assign(N, 0);
+  else std::fill(mask.begin(), mask.end(), 0);
 
   for (int y = 0; y < H; ++y) {
     for (int x = 0; x < W; ++x) {
@@ -18,7 +20,6 @@ std::vector<uint8_t> buildMaskSlice(const ParentBlock& parent, uint32_t labelId,
           (parent.grid().at(x, y, z) == labelId) ? 1u : 0u;
     }
   }
-  return mask;
 }
 
 // Merge horizontal runs on a single row into [x0, x1) intervals where mask==1.
@@ -260,6 +261,7 @@ std::vector<BlockDesc> MaxRectStrat::cover(const ParentBlock& parent,
 
     active.swap(next);
   }
+}
 
   for (const auto& kv : active) {
     const auto& a = kv.second;
