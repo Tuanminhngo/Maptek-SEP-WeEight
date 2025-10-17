@@ -12,11 +12,18 @@ int main() {
     IO::Endpoint ep(std::cin, std::cout);
     ep.init();
 
-    // Function for fast streaming of RLE algorithm
-    // If you want to use another algorithm or use normal parent block grouping for RLE 
-    // just comment the code below and use hasNextParent (see below)
-    ep.emitRLEXY();  
+    const Model::LabelTable& lt = ep.labels();
+    Strategy::MaxRectStrat strat;
 
+    while (ep.hasNextParent()) {
+        Model::ParentBlock parent = ep.nextParent();
+        
+        for (uint32_t labelId = 0; labelId < lt.size(); ++labelId) {
+            std::vector<BlockDesc> blocks = strat.cover(parent, labelId);
+            
+            ep.write(blocks);
+        }
+    }
 
     // Uncomment the code below to use other algorithm
 

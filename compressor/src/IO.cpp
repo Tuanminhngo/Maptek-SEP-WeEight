@@ -105,9 +105,28 @@ void Endpoint::init() {
 
   // 3) Prepare reusable parent buffer; defer reading grid slices until needed
   parent_ = std::make_unique<Model::Grid>(parentX_, parentY_, parentZ_);
-  chunkLoaded_ = false;
-  chunkLines_.clear();
-  chunkLines_.reserve(static_cast<size_t>(parentZ_ * H_));
+  // For each slice z: H lines; each line has W characters (tags).
+  for (int z = 0; z < D; ++z) {
+    for (int y = 0; y < H; ++y) {
+      if (!std::getline(*in_, line))
+        throw std::runtime_error(
+            "Unexpected EOF while reading model (z=" + std::to_string(z) +
+            ", y=" + std::to_string(y) + ")");
+      if ((int)line.size() < W)
+        throw std::runtime_error("Row too short at z=" + std::to_string(z) +
+                                 ", y=" + std::to_string(y));
+      for (int x = 0; x < W; ++x) {
+        const char tag = line[x];
+        const uint32_t id = labelTable_->getId(tag);
+        mapModel_->at(x, y, z) = id;
+      }
+    }
+    // Optional blank line between slices — consume if present
+    std::streampos pos = in_->tellg();
+    if (in_->peek() == '\n' || in_->peek() == '\r') {
+      std::getline(*in_, line);
+    }
+  }
 
   // 4) Reset parent iteration counters
   nx_ = ny_ = nz_ = 0;
@@ -117,7 +136,12 @@ void Endpoint::init() {
 
 bool Endpoint::hasNextParent() const {
   if (!initialized_) return false;
-  return nz_ < maxNz_;
+  const int D = mapModel_->depth();
+  const int PZ = parentZ_;
+  const int maxNz = D / PZ;
+
+  if (nz_ < maxNz) return true;
+  return false;
 }
 
 Model::ParentBlock Endpoint::nextParent() {
