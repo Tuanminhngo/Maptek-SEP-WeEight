@@ -356,88 +356,147 @@ void StreamRLEXY::onSliceEnd(int z, std::vector<Model::BlockDesc>& out) {
   flushStripeEnd(z, out);
 }
 
+    // -------- MaxCuboidStrat implementation (maximize compression, ignore speed) --------
+    std::vector<BlockDesc> MaxCuboidStrat::cover(const ParentBlock& parent, uint32_t labelId) {
+      std::vector<BlockDesc> out;
+      const int W = parent.sizeX();
+      const int H = parent.sizeY();
+      const int D = parent.sizeZ();
 
-// -------- FusionCube3DStrat implementation --------
-std::vector<BlockDesc> FusionCube3DStrat::cover(const ParentBlock& parent,
-                                                uint32_t labelId) {
-  std::vector<BlockDesc> out;
-  const int W = parent.sizeX();
-  const int H = parent.sizeY();
-  const int D = parent.sizeZ();
+      const int ox = parent.originX();
+      const int oy = parent.originY();
+      const int oz = parent.originZ();
 
-  const int ox = parent.originX();
-  const int oy = parent.originY();
-  const int oz = parent.originZ();
+      if (W <= 0 || H <= 0 || D <= 0) return out;
+      const auto& grid = parent.grid();
 
-  if (W <= 0 || H <= 0 || D <= 0) return out;
+      auto id3 = [W, H](int x, int y, int z) -> size_t {
+        return static_cast<size_t>(x) + static_cast<size_t>(y) * W +
+               static_cast<size_t>(z) * W * H;
+      };
+    
+      // Build mask for the label
+      std::vector<uint8_t> mask(static_cast<size_t>(W) * H * D, 0);
+      for (int z = 0; z < D; ++z)
+        for (int y = 0; y < H; ++y)
+          for (int x = 0; x < W; ++x)
+            if (grid.at(x, y, z) == labelId) mask[id3(x, y, z)] = 1;
 
-  // Visited mask
-  const size_t N = static_cast<size_t>(W) * H * D;
-  std::vector<uint8_t> vis(N, 0);
-  auto id3 = [W, H](int x, int y, int z) -> size_t {
-    return static_cast<size_t>(x) + static_cast<size_t>(y) * W +
-           static_cast<size_t>(z) * W * H;
-  };
+      // Helper: check if any 1 remains
+      auto any_one = [&]() -> bool {
+        for (auto v : mask) if (v) return true;
+        return false;
+      };
+    
+      // Compute largest rectangle in a binary matrix B (H x W), return area and rectangle coords (x0,y0,dx,dy)
+      auto maxRectBinary = [&](const std::vector<uint8_t>& B,
+                               int& rx0, int& ry0, int& rdx, int& rdy) -> int64_t {
+        std::vector<int> heights(W, 0);
+        int64_t bestArea = 0;
+        int best_x0 = 0, best_y0 = 0, best_dx = 0, best_dy = 0;
 
-  const auto& g = parent.grid();
-  out.reserve(static_cast<size_t>(W * H * D) / 8);
-
-  for (int z = 0; z < D; ++z) {
-    for (int y = 0; y < H; ++y) {
-      for (int x = 0; x < W; ++x) {
-        if (vis[id3(x,y,z)]) continue;
-        if (g.at(x,y,z) != labelId) continue;
-
-        // Greedily expand along X
-        int x1 = x;
-        while (x1 < W && !vis[id3(x1,y,z)] && g.at(x1,y,z) == labelId) ++x1;
-
-        // Expand along Y while whole strip [x..x1) matches
-        int y1 = y;
-        bool canExpandY = true;
-        while (canExpandY && y1 < H) {
-          for (int xx = x; xx < x1; ++xx) {
-            if (vis[id3(xx,y1,z)] || g.at(xx,y1,z) != labelId) {
-              canExpandY = false;
-              break;
+        for (int y = 0; y < H; ++y) {
+          // update heights
+          for (int x = 0; x < W; ++x) {
+            heights[x] = (B[y * W + x] ? heights[x] + 1 : 0);
+          }
+          // largest rectangle in histogram for this row
+          std::vector<int> st;
+          std::vector<int> left(W), right(W);
+          for (int x = 0; x < W; ++x) {
+            while (!st.empty() && heights[st.back()] >= heights[x]) st.pop_back();
+            left[x] = st.empty() ? 0 : st.back() + 1;
+            st.push_back(x);
+          }
+          st.clear();
+          for (int x = W - 1; x >= 0; --x) {
+            while (!st.empty() && heights[st.back()] >= heights[x]) st.pop_back();
+            right[x] = st.empty() ? W - 1 : st.back() - 1;
+            st.push_back(x);
+          }
+          for (int x = 0; x < W; ++x) {
+            if (heights[x] == 0) continue;
+            int width = right[x] - left[x] + 1;
+            int64_t area = static_cast<int64_t>(width) * heights[x];
+            if (area > bestArea) {
+              bestArea = area;
+              best_dx = width;
+              best_dy = heights[x];
+              // heights[x] extends up to current row y, so y0 = y - dy + 1
+              best_y0 = y - best_dy + 1;
+              // we need x0; left[x] is left boundary
+              best_x0 = left[x];
             }
           }
-          if (canExpandY) ++y1;
         }
+        rx0 = best_x0; ry0 = best_y0; rdx = best_dx; rdy = best_dy;
+        return bestArea;
+      };
+    
+      // Main loop: repeatedly find the maximum-volume cuboid and remove it
+      while (any_one()) {
+        int bestX = 0, bestY = 0, bestZ = 0, bestDX = 0, bestDY = 0, bestDZ = 0;
+        int64_t bestVol = 0;
 
-        // Expand along Z for the current XxY face
-        int z1 = z;
-        bool canExpandZ = true;
-        while (canExpandZ && z1 < D) {
-          for (int yy = y; yy < y1; ++yy) {
-            for (int xx = x; xx < x1; ++xx) {
-              if (vis[id3(xx,yy,z1)] || g.at(xx,yy,z1) != labelId) {
-                canExpandZ = false;
-                break;
+        // For each starting slice z0, grow depth h and AND slices into B
+        std::vector<uint8_t> B(static_cast<size_t>(W) * H, 0);
+        for (int z0 = 0; z0 < D; ++z0) {
+          // initialize B with slice z0
+          bool any = false;
+          for (int y = 0; y < H; ++y) {
+            for (int x = 0; x < W; ++x) {
+              uint8_t v = mask[id3(x, y, z0)];
+              B[y * W + x] = v;
+              any |= (v != 0);
+            }
+          }
+          if (!any) continue;
+
+          for (int h = 1; z0 + h - 1 < D; ++h) {
+            if (h > 1) {
+              int z = z0 + h - 1;
+              // AND next slice into B
+              bool any2 = false;
+              for (int y = 0; y < H; ++y) {
+                for (int x = 0; x < W; ++x) {
+                  uint8_t nv = (B[y * W + x] & mask[id3(x, y, z)]);
+                  B[y * W + x] = nv;
+                  any2 |= (nv != 0);
+                }
               }
+              if (!any2) break;
             }
-            if (!canExpandZ) break;
+
+            int rx0 = 0, ry0 = 0, rdx = 0, rdy = 0;
+            int64_t area = maxRectBinary(B, rx0, ry0, rdx, rdy);
+            if (area <= 0) continue;
+            int64_t vol = area * h;
+            if (vol > bestVol) {
+              bestVol = vol;
+              bestX = rx0;
+              bestY = ry0;
+              bestDX = rdx;
+              bestDY = rdy;
+              bestZ = z0;
+              bestDZ = h;
+            }
           }
-          if (canExpandZ) ++z1;
         }
 
-        // Mark visited and emit block
-        for (int zz = z; zz < z1; ++zz) {
-          for (int yy = y; yy < y1; ++yy) {
-            for (int xx = x; xx < x1; ++xx) {
-              vis[id3(xx,yy,zz)] = 1;
-            }
-          }
-        }
+        if (bestVol == 0) break; // nothing left
 
-        out.push_back(BlockDesc{ox + x, oy + y, oz + z,
-                                x1 - x, y1 - y, z1 - z,
-                                labelId});
+        // Emit block in global coordinates
+        out.push_back(BlockDesc{ox + bestX, oy + bestY, oz + bestZ,
+                                bestDX, bestDY, bestDZ, labelId});
+
+        // Clear mask region
+        for (int z = bestZ; z < bestZ + bestDZ; ++z)
+          for (int y = bestY; y < bestY + bestDY; ++y)
+            for (int x = bestX; x < bestX + bestDX; ++x)
+              mask[id3(x, y, z)] = 0;
       }
+
+      return out;
     }
-  }
-
-  return out;
-}
-
+    
 }  // namespace Strategy

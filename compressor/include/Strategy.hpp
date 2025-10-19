@@ -83,9 +83,8 @@ class StreamRLEXY {
 };
 
 
-
-// FusionCube3DStrat — Greedy 3D cuboid merging for large uniform regions
-class FusionCube3DStrat : public GroupingStrategy {
+// MaxCuboidStrat — Iterative maximum-volume uniform cuboid extraction (ratio-focused)
+class MaxCuboidStrat : public GroupingStrategy {
  public:
   std::vector<Model::BlockDesc> cover(const Model::ParentBlock& parent,
                                       uint32_t labelId) override;

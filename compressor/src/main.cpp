@@ -1,4 +1,3 @@
-
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -26,10 +25,10 @@ int main(int argc, char** argv) {
     if (argc > 1) alg = argv[1];
     alg = to_lower(alg);
 
-    if (alg == "fusioncube3d" || alg == "fusion3d" || alg == "fusion") {
-        // Non-streaming per-parent greedy 3D cuboid merging
+    // Default: MaxCuboid for best compression
+    if (alg.empty() || alg == "maxcuboid" || alg == "largest" || alg == "best") {
         const auto& lt = ep.labels();
-        Strategy::FusionCube3DStrat strat;
+        Strategy::MaxCuboidStrat strat;
         while (ep.hasNextParent()) {
             Model::ParentBlock parent = ep.nextParent();
             for (uint32_t labelId = 0; labelId < lt.size(); ++labelId) {
@@ -39,9 +38,22 @@ int main(int argc, char** argv) {
         }
         ep.flush();
         return 0;
-    } else {
-        // Default: fast streaming RLE across slices (X->Y stripes per Z)
+    } else if (alg == "rle" || alg == "stream" || alg == "def") {
+        // Optional: allow forcing the fast streaming RLE if you ever want it
         ep.emitRLEXY();
+        return 0;
+    } else {
+        // Unknown arg: fall back to MaxCuboid (compression-first)
+        const auto& lt = ep.labels();
+        Strategy::MaxCuboidStrat strat;
+        while (ep.hasNextParent()) {
+            Model::ParentBlock parent = ep.nextParent();
+            for (uint32_t labelId = 0; labelId < lt.size(); ++labelId) {
+                auto blocks = strat.cover(parent, labelId);
+                if (!blocks.empty()) ep.write(blocks);
+            }
+        }
+        ep.flush();
         return 0;
     }
 }
