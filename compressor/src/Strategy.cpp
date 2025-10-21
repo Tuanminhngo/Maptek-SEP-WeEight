@@ -465,16 +465,8 @@ void StreamRLEXY::mergeRow(int z, int y, std::vector<Model::BlockDesc>& out) {
       }
 
       if (!merged) {
-        // Emit any groups that couldn't be extended
-        for (const auto& group : active) {
-          if ((group.x0 >= run.x0 && group.x0 < run.x1) ||
-              (run.x0 >= group.x0 && run.x0 < group.x1)) {
-            // Overlapping region - emit the old group
-            out.push_back(toBlock(z, group));
-          }
-        }
-
         // Start new group from this run
+        // (Old groups will be emitted later when we check what wasn't continued)
         nextActive.push_back(Group{run.x0, run.x1, y, 1, run.labelId});
       }
     }
