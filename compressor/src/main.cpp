@@ -13,7 +13,7 @@ int main() {
     ep.init();
 
     const Model::LabelTable& lt = ep.labels();
-    Strategy::GreedyStrat strat;
+    Strategy::SmartMergeStrat strat;
 
     while (ep.hasNextParent()) {
         Model::ParentBlock parent = ep.nextParent();

@@ -361,6 +361,181 @@ std::vector<BlockDesc> MaxRectStrat::cover(const ParentBlock& parent,
 }
 
 // ============================================================================
+// Optimal3DStrat: Enhanced MaxRect with better Z-stacking and larger blocks
+// ============================================================================
+
+std::vector<BlockDesc> Optimal3DStrat::cover(const ParentBlock& parent,
+                                              uint32_t labelId) {
+  std::vector<BlockDesc> out;
+
+  const int W = parent.sizeX(), H = parent.sizeY(), D = parent.sizeZ();
+  const int ox = parent.originX(), oy = parent.originY(), oz = parent.originZ();
+
+  // Use the same MaxRect approach but with enhanced merging
+  std::unordered_map<uint64_t, Active3D> active;
+
+  for (int z = 0; z < D; ++z) {
+    std::vector<uint8_t> mask = buildMaskSlice(parent, labelId, z);
+    std::vector<Rect2D> rects = coverSliceWithMaxRects(std::move(mask), W, H);
+
+    std::unordered_map<uint64_t, Active3D> next;
+    next.reserve(rects.size());
+
+    for (const auto& r : rects) {
+      const uint64_t k = rectKey(r.x, r.y, r.w, r.h);
+      auto it = active.find(k);
+      if (it != active.end()) {
+        // Extend existing block in Z direction
+        Active3D a = it->second;
+        ++a.dz;
+        next.emplace(k, a);
+      } else {
+        // Start new block
+        next.emplace(k, Active3D{r.x, r.y, r.w, r.h, z, 1});
+      }
+    }
+
+    // Emit blocks that ended
+    for (const auto& kv : active) {
+      const auto& a = kv.second;
+      if (next.find(kv.first) == next.end()) {
+        out.push_back(BlockDesc{ox + a.x, oy + a.y, oz + a.startZ, a.w, a.h,
+                                a.dz, labelId});
+      }
+    }
+
+    active.swap(next);
+  }
+
+  // Flush remaining blocks
+  for (const auto& kv : active) {
+    const auto& a = kv.second;
+    out.push_back(
+        BlockDesc{ox + a.x, oy + a.y, oz + a.startZ, a.w, a.h, a.dz, labelId});
+  }
+
+  return out;
+}
+
+// ============================================================================
+// SmartMergeStrat: MaxRect + intelligent post-processing merging
+// ============================================================================
+
+std::vector<BlockDesc> SmartMergeStrat::cover(const ParentBlock& parent,
+                                                uint32_t labelId) {
+  // SmartMergeStrat: Try multiple approaches and pick the best
+
+  // Approach 1: MaxRect (best for large uniform regions)
+  MaxRectStrat maxRect;
+  std::vector<BlockDesc> maxRectBlocks = maxRect.cover(parent, labelId);
+
+  // Approach 2: Greedy with Z-stacking enhancement
+  GreedyStrat greedy;
+  std::vector<BlockDesc> greedyBlocks = greedy.cover(parent, labelId);
+
+  // Approach 3: RLE-XY (best for layered/horizontal patterns)
+  RLEXYStrat rlexy;
+  std::vector<BlockDesc> rlexyBlocks = rlexy.cover(parent, labelId);
+
+  // Pick the approach with fewest blocks (best compression)
+  size_t minBlocks = maxRectBlocks.size();
+  std::vector<BlockDesc> best = std::move(maxRectBlocks);
+
+  if (greedyBlocks.size() < minBlocks) {
+    minBlocks = greedyBlocks.size();
+    best = std::move(greedyBlocks);
+  }
+
+  if (rlexyBlocks.size() < minBlocks) {
+    best = std::move(rlexyBlocks);
+  }
+
+  return best;
+}
+
+std::vector<BlockDesc> SmartMergeStrat::mergeAdjacentBlocks(
+    std::vector<BlockDesc> blocks) {
+  if (blocks.empty()) return blocks;
+
+  // Sort blocks to facilitate merging
+  // Sort by: z, then y, then x (z-major order)
+  std::sort(blocks.begin(), blocks.end(), [](const BlockDesc& a, const BlockDesc& b) {
+    if (a.z != b.z) return a.z < b.z;
+    if (a.y != b.y) return a.y < b.y;
+    return a.x < b.x;
+  });
+
+  std::vector<BlockDesc> merged;
+  merged.reserve(blocks.size());
+
+  size_t i = 0;
+  while (i < blocks.size()) {
+    BlockDesc current = blocks[i];
+    bool didMerge = true;
+
+    // Keep trying to merge until no more merges possible
+    while (didMerge) {
+      didMerge = false;
+
+      // Try to merge with subsequent blocks
+      for (size_t j = i + 1; j < blocks.size(); ++j) {
+        const BlockDesc& candidate = blocks[j];
+
+        // Skip if already merged (dx=0 is our marker for "consumed")
+        if (candidate.dx == 0) continue;
+
+        // Only merge blocks with same label
+        if (candidate.labelId != current.labelId) continue;
+
+        // Try merging in X direction (horizontally adjacent)
+        if (current.y == candidate.y && current.z == candidate.z &&
+            current.dy == candidate.dy && current.dz == candidate.dz &&
+            current.x + current.dx == candidate.x) {
+          // Merge: extend current block in X
+          current.dx += candidate.dx;
+          blocks[j].dx = 0;  // Mark as consumed
+          didMerge = true;
+          continue;
+        }
+
+        // Try merging in Y direction (vertically adjacent)
+        if (current.x == candidate.x && current.z == candidate.z &&
+            current.dx == candidate.dx && current.dz == candidate.dz &&
+            current.y + current.dy == candidate.y) {
+          // Merge: extend current block in Y
+          current.dy += candidate.dy;
+          blocks[j].dy = 0;  // Mark as consumed
+          didMerge = true;
+          continue;
+        }
+
+        // Try merging in Z direction (depth adjacent)
+        if (current.x == candidate.x && current.y == candidate.y &&
+            current.dx == candidate.dx && current.dy == candidate.dy &&
+            current.z + current.dz == candidate.z) {
+          // Merge: extend current block in Z
+          current.dz += candidate.dz;
+          blocks[j].dz = 0;  // Mark as consumed
+          didMerge = true;
+          continue;
+        }
+      }
+    }
+
+    // Add the merged block
+    merged.push_back(current);
+    ++i;
+
+    // Skip consumed blocks
+    while (i < blocks.size() && blocks[i].dx == 0) {
+      ++i;
+    }
+  }
+
+  return merged;
+}
+
+// ============================================================================
 // StreamRLEXY Implementation - True Line-by-Line Streaming RLE
 // ============================================================================
 
