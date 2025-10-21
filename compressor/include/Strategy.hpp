@@ -83,12 +83,11 @@ class StreamRLEXY {
 };
 
 
-// MaxCuboidStrat — Iterative maximum-volume uniform cuboid extraction (ratio-focused)
-class MaxCuboidStrat : public GroupingStrategy {
+// OctreeSVO — Hierarchical octree subdivision; emit uniform nodes as cuboids
+class OctreeSVO : public GroupingStrategy {
  public:
   std::vector<Model::BlockDesc> cover(const Model::ParentBlock& parent,
                                       uint32_t labelId) override;
-};
-
+  };
 };  // namespace Strategy
 #endif
