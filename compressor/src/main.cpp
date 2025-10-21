@@ -28,7 +28,8 @@ int main() {
     ep.flush();
     return 0;
 
-    
+    // UNCOMMENT THE CODE BELOW TO RUN STREAMRLEXY ALGORITHM
+
     // std::ios::sync_with_stdio(false);
     // std::cin.tie(nullptr);
     // IO::Endpoint ep(std::cin, std::cout);
@@ -37,5 +38,5 @@ int main() {
     // // Use StreamRLEXY for infinite streaming!
     // ep.emitRLEXY();
 
-    return 0;
+    // return 0;
 }
