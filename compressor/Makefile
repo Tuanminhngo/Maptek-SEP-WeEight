@@ -17,6 +17,9 @@ TESTSRC_STRAT := tests/test_strategy.cpp
 BUILDBIN := bin/compressor
 BUILDSRC := src/main.cpp
 
+STREAMBIN := bin/compressor-stream
+STREAMSRC := src/main_stream.cpp
+
 BUILDEXEMAC := bin/compressor-mac.exe
 BUILDEXE := bin/compressor-win.exe
 
@@ -30,6 +33,9 @@ $(TESTBIN_STRAT): $(SRC) $(TESTSRC_STRAT) | bin
 
 $(BUILDBIN): $(SRC) $(BUILDSRC) | bin
 	$(CXX) $(CXXFLAGS) -o $@ $(SRC) $(BUILDSRC)
+
+$(STREAMBIN): $(SRC) $(STREAMSRC) | bin
+	$(CXX) $(CXXFLAGS) -o $@ $(SRC) $(STREAMSRC)
 
 $(BUILDEXEMAC): $(SRC) $(BUILDSRC) | bin
 	$(WINXX) $(WINXXFLAGS) $(SRC) $(BUILDSRC) $(WINLDFLAGS) -o $@ 
