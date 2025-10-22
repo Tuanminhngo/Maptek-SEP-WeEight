@@ -60,6 +60,14 @@ class SmartMergeStrat : public GroupingStrategy {
       std::vector<Model::BlockDesc> blocks);
 };
 
+// Guillotine Cut Strategy: Advanced rectangle packing with recursive cuts
+// Potentially better than MaxRect for irregular patterns
+class GuillotineStrat : public GroupingStrategy {
+ public:
+  std::vector<Model::BlockDesc> cover(const Model::ParentBlock& parent,
+                                      uint32_t labelId) override;
+};
+
 // Streaming strategy for fast RLE along X and vertical merge within
 // parent-Y boundaries. Consumed by IO's streaming reader.
 class StreamRLEXY {
