@@ -11,8 +11,7 @@ std::vector<uint8_t> buildMaskSlice(const ParentBlock& parent, uint32_t labelId,
   const int W = parent.sizeX();
   const int H = parent.sizeY();
   const size_t N = static_cast<size_t>(W * H);
-  if (mask.size() != N) mask.assign(N, 0);
-  else std::fill(mask.begin(), mask.end(), 0);
+  std::vector<uint8_t> mask(N, 0);
 
   for (int y = 0; y < H; ++y) {
     for (int x = 0; x < W; ++x) {
@@ -20,6 +19,7 @@ std::vector<uint8_t> buildMaskSlice(const ParentBlock& parent, uint32_t labelId,
           (parent.grid().at(x, y, z) == labelId) ? 1u : 0u;
     }
   }
+  return mask;
 }
 
 // Merge horizontal runs on a single row into [x0, x1) intervals where mask==1.
@@ -223,6 +223,94 @@ std::vector<BlockDesc> GreedyStrat::cover(const ParentBlock& parent,
   return out;
 }
 
+// RLEXYStrat: RLE along X + vertical merge within parent block
+std::vector<BlockDesc> RLEXYStrat::cover(const ParentBlock& parent,
+                                          uint32_t labelId) {
+  std::vector<BlockDesc> out;
+
+  const int W = parent.sizeX(), H = parent.sizeY(), D = parent.sizeZ();
+  const int ox = parent.originX(), oy = parent.originY(), oz = parent.originZ();
+
+  // Process each slice independently (dz=1 per block)
+  for (int z = 0; z < D; ++z) {
+    // Build binary mask for this slice
+    std::vector<uint8_t> mask = buildMaskSlice(parent, labelId, z);
+
+    // Current active groups (x0, x1, startY, height)
+    struct Group {
+      int x0, x1, startY, height;
+    };
+    std::vector<Group> active;
+    std::vector<Group> nextActive;
+
+    // Process each row
+    for (int y = 0; y < H; ++y) {
+      nextActive.clear();
+
+      // Find runs in this row
+      std::vector<std::pair<int, int>> runs;
+      int x = 0;
+      while (x < W) {
+        while (x < W && mask[static_cast<size_t>(x + y * W)] == 0) ++x;
+        if (x >= W) break;
+        const int start = x;
+        while (x < W && mask[static_cast<size_t>(x + y * W)] == 1) ++x;
+        runs.emplace_back(start, x);
+      }
+
+      // Try to extend active groups
+      for (const auto& run : runs) {
+        bool merged = false;
+        for (auto& g : active) {
+          if (g.x0 == run.first && g.x1 == run.second &&
+              g.startY + g.height == y) {
+            ++g.height;
+            nextActive.push_back(g);
+            merged = true;
+            break;
+          }
+        }
+        if (!merged) {
+          // Emit groups that can't extend
+          for (const auto& g : active) {
+            if ((g.x0 < run.second && g.x1 > run.first)) {
+              out.push_back(BlockDesc{ox + g.x0, oy + g.startY, oz + z,
+                                      g.x1 - g.x0, g.height, 1, labelId});
+            }
+          }
+          // Start new group
+          nextActive.push_back(Group{run.first, run.second, y, 1});
+        }
+      }
+
+      // Emit groups that ended
+      for (const auto& g : active) {
+        bool found = false;
+        for (const auto& next : nextActive) {
+          if (next.x0 == g.x0 && next.x1 == g.x1 && next.startY == g.startY) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          out.push_back(BlockDesc{ox + g.x0, oy + g.startY, oz + z,
+                                  g.x1 - g.x0, g.height, 1, labelId});
+        }
+      }
+
+      active.swap(nextActive);
+    }
+
+    // Flush remaining groups
+    for (const auto& g : active) {
+      out.push_back(BlockDesc{ox + g.x0, oy + g.startY, oz + z,
+                              g.x1 - g.x0, g.height, 1, labelId});
+    }
+  }
+
+  return out;
+}
+
 // MaxRectStrat: 2D MaxRect per slice + z stacking
 std::vector<BlockDesc> MaxRectStrat::cover(const ParentBlock& parent,
                                            uint32_t labelId) {
@@ -261,8 +349,8 @@ std::vector<BlockDesc> MaxRectStrat::cover(const ParentBlock& parent,
 
     active.swap(next);
   }
-}
 
+  // Flush remaining active blocks after processing all slices
   for (const auto& kv : active) {
     const auto& a = kv.second;
     out.push_back(
@@ -270,6 +358,146 @@ std::vector<BlockDesc> MaxRectStrat::cover(const ParentBlock& parent,
   }
 
   return out;
+}
+
+// ============================================================================
+// StreamRLEXY Implementation - True Line-by-Line Streaming RLE
+// ============================================================================
+
+StreamRLEXY::StreamRLEXY(int X, int Y, int Z, int PX, int PY,
+                         const Model::LabelTable& labels)
+    : labels_(labels), X_(X), Y_(Y), Z_(Z), PX_(PX), PY_(PY) {
+  // Number of tiles in X direction
+  numNx_ = X / PX;
+
+  // Initialize state vectors for each tile
+  active_.resize(static_cast<size_t>(numNx_));
+  nextActive_.resize(static_cast<size_t>(numNx_));
+  currRuns_.resize(static_cast<size_t>(numNx_));
+}
+
+void StreamRLEXY::onRow(int z, int y, const std::string& row,
+                        std::vector<Model::BlockDesc>& out) {
+  // Build horizontal runs for this row
+  buildRunsForRow(row);
+
+  // Check if we're at a PY stripe boundary
+  const int localY = y % PY_;
+
+  if (localY == 0 && y > 0) {
+    // Flush previous stripe before starting new one
+    flushStripeEnd(z, out);
+    // Clear active groups for new stripe
+    for (auto& tile : active_) {
+      tile.clear();
+    }
+  }
+
+  // Merge this row into active groups
+  mergeRow(z, y, out);
+}
+
+void StreamRLEXY::onSliceEnd(int z, std::vector<Model::BlockDesc>& out) {
+  // Flush any remaining groups at end of slice
+  flushStripeEnd(z, out);
+  // Clear all state for next slice
+  for (auto& tile : active_) {
+    tile.clear();
+  }
+}
+
+void StreamRLEXY::buildRunsForRow(const std::string& row) {
+  // Clear previous runs
+  for (auto& runs : currRuns_) {
+    runs.clear();
+  }
+
+  // Build runs for each tile
+  for (int nx = 0; nx < numNx_; ++nx) {
+    const int tileStartX = nx * PX_;
+    const int tileEndX = tileStartX + PX_;
+
+    auto& runs = currRuns_[static_cast<size_t>(nx)];
+
+    // RLE within this tile
+    int x = tileStartX;
+    while (x < tileEndX) {
+      const char tag = row[static_cast<size_t>(x)];
+      const uint32_t labelId = labels_.getId(tag);
+      const int runStart = x;
+
+      // Extend run while same label
+      while (x < tileEndX && row[static_cast<size_t>(x)] == tag) {
+        ++x;
+      }
+
+      // Store run
+      runs.push_back(Run{runStart, x, labelId});
+    }
+  }
+}
+
+void StreamRLEXY::mergeRow(int z, int y, std::vector<Model::BlockDesc>& out) {
+  // Process each tile independently
+  for (int nx = 0; nx < numNx_; ++nx) {
+    auto& active = active_[static_cast<size_t>(nx)];
+    auto& nextActive = nextActive_[static_cast<size_t>(nx)];
+    const auto& runs = currRuns_[static_cast<size_t>(nx)];
+
+    nextActive.clear();
+
+    // Try to extend existing groups with current runs
+    for (const auto& run : runs) {
+      bool merged = false;
+
+      // Check if this run can extend an active group
+      for (auto& group : active) {
+        if (group.labelId == run.labelId &&
+            group.x0 == run.x0 &&
+            group.x1 == run.x1 &&
+            group.startY + group.height == y) {
+          // Extend the group vertically
+          ++group.height;
+          nextActive.push_back(group);
+          merged = true;
+          break;
+        }
+      }
+
+      if (!merged) {
+        // Start new group from this run
+        // (Old groups will be emitted later when we check what wasn't continued)
+        nextActive.push_back(Group{run.x0, run.x1, y, 1, run.labelId});
+      }
+    }
+
+    // Emit groups that weren't in nextActive (ended)
+    for (const auto& group : active) {
+      bool found = false;
+      for (const auto& next : nextActive) {
+        if (next.x0 == group.x0 && next.x1 == group.x1 &&
+            next.startY == group.startY && next.labelId == group.labelId) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        out.push_back(toBlock(z, group));
+      }
+    }
+
+    // Swap active and nextActive
+    active.swap(nextActive);
+  }
+}
+
+void StreamRLEXY::flushStripeEnd(int z, std::vector<Model::BlockDesc>& out) {
+  // Emit all remaining active groups
+  for (const auto& tile : active_) {
+    for (const auto& group : tile) {
+      out.push_back(toBlock(z, group));
+    }
+  }
 }
 
 }  // namespace Strategy
