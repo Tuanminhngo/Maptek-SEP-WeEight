@@ -13,14 +13,22 @@ int main() {
     ep.init();
 
     const Model::LabelTable& lt = ep.labels();
-    Strategy::GreedyStrat strat;
+    Strategy::SmartMergeStrat strat;  // SmartMerge: Best compression with practical speed
 
     while (ep.hasNextParent()) {
         Model::ParentBlock parent = ep.nextParent();
-        
+
+        // Collect all blocks from all labels
+        std::vector<std::vector<BlockDesc>> allLabelBlocks;
+        allLabelBlocks.reserve(lt.size());
+
         for (uint32_t labelId = 0; labelId < lt.size(); ++labelId) {
             std::vector<BlockDesc> blocks = strat.cover(parent, labelId);
-            
+            allLabelBlocks.push_back(std::move(blocks));
+        }
+
+        // Write all blocks (cross-label optimization happens in strategy)
+        for (const auto& blocks : allLabelBlocks) {
             ep.write(blocks);
         }
     }

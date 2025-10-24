@@ -361,6 +361,327 @@ std::vector<BlockDesc> MaxRectStrat::cover(const ParentBlock& parent,
 }
 
 // ============================================================================
+// Optimal3DStrat: Enhanced MaxRect with better Z-stacking and larger blocks
+// ============================================================================
+
+std::vector<BlockDesc> Optimal3DStrat::cover(const ParentBlock& parent,
+                                              uint32_t labelId) {
+  std::vector<BlockDesc> out;
+
+  const int W = parent.sizeX(), H = parent.sizeY(), D = parent.sizeZ();
+  const int ox = parent.originX(), oy = parent.originY(), oz = parent.originZ();
+
+  // Use the same MaxRect approach but with enhanced merging
+  std::unordered_map<uint64_t, Active3D> active;
+
+  for (int z = 0; z < D; ++z) {
+    std::vector<uint8_t> mask = buildMaskSlice(parent, labelId, z);
+    std::vector<Rect2D> rects = coverSliceWithMaxRects(std::move(mask), W, H);
+
+    std::unordered_map<uint64_t, Active3D> next;
+    next.reserve(rects.size());
+
+    for (const auto& r : rects) {
+      const uint64_t k = rectKey(r.x, r.y, r.w, r.h);
+      auto it = active.find(k);
+      if (it != active.end()) {
+        // Extend existing block in Z direction
+        Active3D a = it->second;
+        ++a.dz;
+        next.emplace(k, a);
+      } else {
+        // Start new block
+        next.emplace(k, Active3D{r.x, r.y, r.w, r.h, z, 1});
+      }
+    }
+
+    // Emit blocks that ended
+    for (const auto& kv : active) {
+      const auto& a = kv.second;
+      if (next.find(kv.first) == next.end()) {
+        out.push_back(BlockDesc{ox + a.x, oy + a.y, oz + a.startZ, a.w, a.h,
+                                a.dz, labelId});
+      }
+    }
+
+    active.swap(next);
+  }
+
+  // Flush remaining blocks
+  for (const auto& kv : active) {
+    const auto& a = kv.second;
+    out.push_back(
+        BlockDesc{ox + a.x, oy + a.y, oz + a.startZ, a.w, a.h, a.dz, labelId});
+  }
+
+  return out;
+}
+
+// ============================================================================
+// SmartMergeStrat: MaxRect + intelligent post-processing merging
+// ============================================================================
+
+std::vector<BlockDesc> SmartMergeStrat::cover(const ParentBlock& parent,
+                                                uint32_t labelId) {
+  // SmartMergeStrat: Try multiple approaches and pick the best
+
+  // Approach 1: MaxRect (best for large uniform regions)
+  MaxRectStrat maxRect;
+  std::vector<BlockDesc> maxRectBlocks = maxRect.cover(parent, labelId);
+
+  // Approach 2: Greedy with Z-stacking enhancement
+  GreedyStrat greedy;
+  std::vector<BlockDesc> greedyBlocks = greedy.cover(parent, labelId);
+
+  // Approach 3: RLE-XY (best for layered/horizontal patterns)
+  RLEXYStrat rlexy;
+  std::vector<BlockDesc> rlexyBlocks = rlexy.cover(parent, labelId);
+
+  // Pick the approach with fewest blocks (best compression)
+  size_t minBlocks = maxRectBlocks.size();
+  std::vector<BlockDesc> best = std::move(maxRectBlocks);
+
+  if (greedyBlocks.size() < minBlocks) {
+    minBlocks = greedyBlocks.size();
+    best = std::move(greedyBlocks);
+  }
+
+  if (rlexyBlocks.size() < minBlocks) {
+    best = std::move(rlexyBlocks);
+  }
+
+  return best;
+}
+
+std::vector<BlockDesc> SmartMergeStrat::mergeAdjacentBlocks(
+    std::vector<BlockDesc> blocks) {
+  if (blocks.empty()) return blocks;
+
+  // Sort blocks to facilitate merging
+  // Sort by: z, then y, then x (z-major order)
+  std::sort(blocks.begin(), blocks.end(), [](const BlockDesc& a, const BlockDesc& b) {
+    if (a.z != b.z) return a.z < b.z;
+    if (a.y != b.y) return a.y < b.y;
+    return a.x < b.x;
+  });
+
+  std::vector<BlockDesc> merged;
+  merged.reserve(blocks.size());
+
+  size_t i = 0;
+  while (i < blocks.size()) {
+    BlockDesc current = blocks[i];
+    bool didMerge = true;
+
+    // Keep trying to merge until no more merges possible
+    while (didMerge) {
+      didMerge = false;
+
+      // Try to merge with subsequent blocks
+      for (size_t j = i + 1; j < blocks.size(); ++j) {
+        const BlockDesc& candidate = blocks[j];
+
+        // Skip if already merged (dx=0 is our marker for "consumed")
+        if (candidate.dx == 0) continue;
+
+        // Only merge blocks with same label
+        if (candidate.labelId != current.labelId) continue;
+
+        // Try merging in X direction (horizontally adjacent)
+        if (current.y == candidate.y && current.z == candidate.z &&
+            current.dy == candidate.dy && current.dz == candidate.dz &&
+            current.x + current.dx == candidate.x) {
+          // Merge: extend current block in X
+          current.dx += candidate.dx;
+          blocks[j].dx = 0;  // Mark as consumed
+          didMerge = true;
+          continue;
+        }
+
+        // Try merging in Y direction (vertically adjacent)
+        if (current.x == candidate.x && current.z == candidate.z &&
+            current.dx == candidate.dx && current.dz == candidate.dz &&
+            current.y + current.dy == candidate.y) {
+          // Merge: extend current block in Y
+          current.dy += candidate.dy;
+          blocks[j].dy = 0;  // Mark as consumed
+          didMerge = true;
+          continue;
+        }
+
+        // Try merging in Z direction (depth adjacent)
+        if (current.x == candidate.x && current.y == candidate.y &&
+            current.dx == candidate.dx && current.dy == candidate.dy &&
+            current.z + current.dz == candidate.z) {
+          // Merge: extend current block in Z
+          current.dz += candidate.dz;
+          blocks[j].dz = 0;  // Mark as consumed
+          didMerge = true;
+          continue;
+        }
+      }
+    }
+
+    // Add the merged block
+    merged.push_back(current);
+    ++i;
+
+    // Skip consumed blocks
+    while (i < blocks.size() && blocks[i].dx == 0) {
+      ++i;
+    }
+  }
+
+  return merged;
+}
+
+// ============================================================================
+// MaxCuboidStrat - Maximum compression via iterative largest cuboid extraction
+// ============================================================================
+
+std::vector<BlockDesc> MaxCuboidStrat::cover(const ParentBlock& parent, uint32_t labelId) {
+  std::vector<BlockDesc> out;
+  const int W = parent.sizeX();
+  const int H = parent.sizeY();
+  const int D = parent.sizeZ();
+
+  const int ox = parent.originX();
+  const int oy = parent.originY();
+  const int oz = parent.originZ();
+
+  if (W <= 0 || H <= 0 || D <= 0) return out;
+  const auto& grid = parent.grid();
+
+  auto id3 = [W, H](int x, int y, int z) -> size_t {
+    return static_cast<size_t>(x) + static_cast<size_t>(y) * W +
+           static_cast<size_t>(z) * W * H;
+  };
+
+  // Build mask for the label
+  std::vector<uint8_t> mask(static_cast<size_t>(W) * H * D, 0);
+  for (int z = 0; z < D; ++z)
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x)
+        if (grid.at(x, y, z) == labelId) mask[id3(x, y, z)] = 1;
+
+  // Helper: check if any 1 remains
+  auto any_one = [&]() -> bool {
+    for (auto v : mask) if (v) return true;
+    return false;
+  };
+
+  // Compute largest rectangle in a binary matrix B (H x W), return area and rectangle coords (x0,y0,dx,dy)
+  auto maxRectBinary = [&](const std::vector<uint8_t>& B,
+                           int& rx0, int& ry0, int& rdx, int& rdy) -> int64_t {
+    std::vector<int> heights(W, 0);
+    int64_t bestArea = 0;
+    int best_x0 = 0, best_y0 = 0, best_dx = 0, best_dy = 0;
+
+    for (int y = 0; y < H; ++y) {
+      // update heights
+      for (int x = 0; x < W; ++x) {
+        heights[x] = (B[y * W + x] ? heights[x] + 1 : 0);
+      }
+      // largest rectangle in histogram for this row
+      std::vector<int> st;
+      std::vector<int> left(W), right(W);
+      for (int x = 0; x < W; ++x) {
+        while (!st.empty() && heights[st.back()] >= heights[x]) st.pop_back();
+        left[x] = st.empty() ? 0 : st.back() + 1;
+        st.push_back(x);
+      }
+      st.clear();
+      for (int x = W - 1; x >= 0; --x) {
+        while (!st.empty() && heights[st.back()] >= heights[x]) st.pop_back();
+        right[x] = st.empty() ? W - 1 : st.back() - 1;
+        st.push_back(x);
+      }
+      for (int x = 0; x < W; ++x) {
+        if (heights[x] == 0) continue;
+        int width = right[x] - left[x] + 1;
+        int64_t area = static_cast<int64_t>(width) * heights[x];
+        if (area > bestArea) {
+          bestArea = area;
+          best_dx = width;
+          best_dy = heights[x];
+          // heights[x] extends up to current row y, so y0 = y - dy + 1
+          best_y0 = y - best_dy + 1;
+          // we need x0; left[x] is left boundary
+          best_x0 = left[x];
+        }
+      }
+    }
+    rx0 = best_x0; ry0 = best_y0; rdx = best_dx; rdy = best_dy;
+    return bestArea;
+  };
+
+  // Main loop: repeatedly find the maximum-volume cuboid and remove it
+  while (any_one()) {
+    int bestX = 0, bestY = 0, bestZ = 0, bestDX = 0, bestDY = 0, bestDZ = 0;
+    int64_t bestVol = 0;
+
+    // For each starting slice z0, grow depth h and AND slices into B
+    std::vector<uint8_t> B(static_cast<size_t>(W) * H, 0);
+    for (int z0 = 0; z0 < D; ++z0) {
+      // initialize B with slice z0
+      bool any = false;
+      for (int y = 0; y < H; ++y) {
+        for (int x = 0; x < W; ++x) {
+          uint8_t v = mask[id3(x, y, z0)];
+          B[y * W + x] = v;
+          any |= (v != 0);
+        }
+      }
+      if (!any) continue;
+
+      for (int h = 1; z0 + h - 1 < D; ++h) {
+        if (h > 1) {
+          int z = z0 + h - 1;
+          // AND next slice into B
+          bool any2 = false;
+          for (int y = 0; y < H; ++y) {
+            for (int x = 0; x < W; ++x) {
+              uint8_t nv = (B[y * W + x] & mask[id3(x, y, z)]);
+              B[y * W + x] = nv;
+              any2 |= (nv != 0);
+            }
+          }
+          if (!any2) break;
+        }
+
+        int rx0 = 0, ry0 = 0, rdx = 0, rdy = 0;
+        int64_t area = maxRectBinary(B, rx0, ry0, rdx, rdy);
+        if (area <= 0) continue;
+        int64_t vol = area * h;
+        if (vol > bestVol) {
+          bestVol = vol;
+          bestX = rx0;
+          bestY = ry0;
+          bestDX = rdx;
+          bestDY = rdy;
+          bestZ = z0;
+          bestDZ = h;
+        }
+      }
+    }
+
+    if (bestVol == 0) break; // nothing left
+
+    // Emit block in global coordinates
+    out.push_back(BlockDesc{ox + bestX, oy + bestY, oz + bestZ,
+                            bestDX, bestDY, bestDZ, labelId});
+
+    // Clear mask region
+    for (int z = bestZ; z < bestZ + bestDZ; ++z)
+      for (int y = bestY; y < bestY + bestDY; ++y)
+        for (int x = bestX; x < bestX + bestDX; ++x)
+          mask[id3(x, y, z)] = 0;
+  }
+
+  return out;
+}
+
+// ============================================================================
 // StreamRLEXY Implementation - True Line-by-Line Streaming RLE
 // ============================================================================
 

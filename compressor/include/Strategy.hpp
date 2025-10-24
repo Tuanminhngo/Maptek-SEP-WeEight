@@ -41,6 +41,33 @@ class RLEXYStrat : public GroupingStrategy {
                                       uint32_t labelId) override;
 };
 
+// Optimal 3D compression: MaxRect in XY + aggressive Z-stacking
+class Optimal3DStrat : public GroupingStrategy {
+ public:
+  std::vector<Model::BlockDesc> cover(const Model::ParentBlock& parent,
+                                      uint32_t labelId) override;
+};
+
+// Smart Merge Strategy: MaxRect + post-processing to merge adjacent blocks
+// Expected improvement: 5-10% better compression than MaxRect alone
+class SmartMergeStrat : public GroupingStrategy {
+ public:
+  std::vector<Model::BlockDesc> cover(const Model::ParentBlock& parent,
+                                      uint32_t labelId) override;
+  // Merge adjacent blocks that can be combined into larger rectangles
+  static std::vector<Model::BlockDesc> mergeAdjacentBlocks(
+      std::vector<Model::BlockDesc> blocks);
+};
+
+// MaxCuboidStrat — Iterative maximum-volume uniform cuboid extraction
+// Slow but achieves maximum compression by finding globally optimal largest cuboids
+// Use this when compression ratio is more important than speed
+class MaxCuboidStrat : public GroupingStrategy {
+ public:
+  std::vector<Model::BlockDesc> cover(const Model::ParentBlock& parent,
+                                      uint32_t labelId) override;
+};
+
 // Streaming strategy for fast RLE along X and vertical merge within
 // parent-Y boundaries. Consumed by IO's streaming reader.
 class StreamRLEXY {
