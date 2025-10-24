@@ -19,8 +19,7 @@ class Endpoint {
 
   // Owned table and grid
   std::unique_ptr<Model::LabelTable> labelTable_;
-  // Note: we no longer keep the whole model in memory.
-  std::unique_ptr<Model::Grid> mapModel_;
+  // Reusable parent block buffer (for streaming - only holds one parent at a time)
   std::unique_ptr<Model::Grid> parent_;  
   // Copy of parent dimensions
   int parentX_{0}, parentY_{0}, parentZ_{0};

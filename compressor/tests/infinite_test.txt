@@ -1,0 +1,40 @@
+8,8,0,4,4,2
+a, SA
+s, TAS
+v, NSW
+
+aaaaaaav
+aaaaaaaa
+aaaaaaaa
+aaaaaaaa
+aaaassss
+aaaassss
+aaaassss
+aaaassss
+
+aaaaaaav
+aaaaaaaa
+aaaaaaaa
+aaaaaaaa
+aaaassss
+aaaassss
+aaaassss
+aaaassss
+
+aaaaaaav
+aaaaaaaa
+aaaaaaaa
+aaaaaaaa
+ssssssss
+ssssssss
+ssssssss
+ssssssss
+
+aaaaaaav
+aaaaaaaa
+aaaaaaaa
+aaaaaaaa
+ssssssss
+ssssssss
+ssssssss
+ssssssss

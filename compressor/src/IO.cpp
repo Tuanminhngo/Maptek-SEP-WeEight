@@ -1,6 +1,7 @@
 #include "../include/IO.hpp"
 #include "../include/Strategy.hpp"
 #include <charconv>
+#include <limits>
 
 using namespace IO;
 
@@ -79,16 +80,28 @@ void Endpoint::init() {
   parentY_ = header[4];
   parentZ_ = header[5];
 
-  if (W_ <= 0 || H_ <= 0 || D_ <= 0 || parentX_ <= 0 || parentY_ <= 0 ||
-      parentZ_ <= 0)
+  if (W_ <= 0 || H_ <= 0 || parentX_ <= 0 || parentY_ <= 0 || parentZ_ <= 0)
     throw std::runtime_error("Non-positive dimensions in header");
 
-  if (W_ % parentX_ || H_ % parentY_ || D_ % parentZ_)
+  // D_ can be 0 for infinite/unknown depth streams
+  if (D_ < 0)
+    throw std::runtime_error("Negative depth in header");
+
+  if (W_ % parentX_ || H_ % parentY_)
     throw std::runtime_error("Model dims must be divisible by parent dims");
+
+  // For infinite streams, D might be very large (e.g., INT_MAX) and not divisible
+  // Only check divisibility for reasonable finite depths (< 100 million)
+  const int REASONABLE_DEPTH_LIMIT = 100000000;
+  if (D_ > 0 && D_ < REASONABLE_DEPTH_LIMIT && D_ % parentZ_)
+    throw std::runtime_error("Model depth must be divisible by parent depth");
 
   maxNx_ = W_ / parentX_;
   maxNy_ = H_ / parentY_;
-  maxNz_ = D_ / parentZ_;
+  // For very large D (infinite stream indicator), process until EOF
+  // For normal finite D, use the specified depth
+  const bool isInfiniteStream = (D_ == 0 || D_ >= REASONABLE_DEPTH_LIMIT);
+  maxNz_ = isInfiniteStream ? std::numeric_limits<int>::max() : (D_ / parentZ_);
 
   // 2) Label table (until blank line)
   while (std::getline(*in_, line)) {
@@ -103,11 +116,9 @@ void Endpoint::init() {
   }
   if (labelTable_->size() == 0) throw std::runtime_error("Empty label table");
 
-  // 3) Prepare reusable parent buffer; defer reading grid slices until needed
+  // 3) Prepare reusable parent buffer for streaming
+  // We DON'T load the entire model here - it will be streamed chunk-by-chunk!
   parent_ = std::make_unique<Model::Grid>(parentX_, parentY_, parentZ_);
-  chunkLoaded_ = false;
-  chunkLines_.clear();
-  chunkLines_.reserve(static_cast<size_t>(parentZ_ * H_));
 
   // 4) Reset parent iteration counters
   nx_ = ny_ = nz_ = 0;
@@ -117,13 +128,27 @@ void Endpoint::init() {
 
 bool Endpoint::hasNextParent() const {
   if (!initialized_) return false;
-  return nz_ < maxNz_;
+  // Check EOF flag - set by loadZChunk() when stream ends
+  if (eof_) return false;
+
+  // For infinite streams, we need to speculatively load the next chunk
+  // to see if there's more data (since maxNz_ might be INT_MAX)
+  // This is safe because loadZChunk() is idempotent when chunkLoaded_ is true
+  if (!chunkLoaded_ && nz_ >= 0) {
+    // Cast away const to allow speculative loading
+    // This is necessary for infinite stream detection
+    const_cast<Endpoint*>(this)->loadZChunk();
+    const_cast<Endpoint*>(this)->chunkLoaded_ = true;
+    // If EOF was set during load, return false
+    if (eof_) return false;
+  }
+
+  // For finite streams, check if we've processed all parent blocks
+  // For infinite streams (maxNz_ = INT_MAX), keep going until EOF
+  return (nz_ < maxNz_);
 }
 
 Model::ParentBlock Endpoint::nextParent() {
-  if (!hasNextParent())
-    throw std::runtime_error("nextParent() called past the end");
-
   const int PX = parentX_, PY = parentY_, PZ = parentZ_;
 
   // Ensure current Z-chunk (PZ slices) is loaded
@@ -131,6 +156,10 @@ Model::ParentBlock Endpoint::nextParent() {
     loadZChunk();
     chunkLoaded_ = true;
   }
+
+  // After loading chunk, check if we hit EOF (for infinite streams)
+  if (!hasNextParent())
+    throw std::runtime_error("nextParent() called past the end");
 
   // Compute this parent global origin from (nx_, ny_, nz_)
   const int originX = nx_ * PX;
@@ -197,7 +226,9 @@ void Endpoint::loadZChunk() {
   for (int dz = 0; dz < parentZ_; ++dz) {
     for (int y = 0; y < H_; ++y) {
       if (!std::getline(*in_, line)) {
-        throw std::runtime_error("Unexpected EOF while reading model slice");
+        // For infinite streams, EOF is expected - mark as end of stream
+        eof_ = true;
+        return;
       }
       if (!line.empty() && line.back() == '\r') line.pop_back();  // handle CRLF
       if ((int)line.size() < W_) {
@@ -221,26 +252,34 @@ void Endpoint::flushOut() {
   }
 }
 
+// StreamRLEXY - True line-by-line streaming compression
+// Supports infinite streams by reading until EOF
 void Endpoint::emitRLEXY() {
   if (!initialized_) init();
 
   const int X = W_;
   const int Y = H_;
-  const int Z = D_;
   const int PX = parentX_;
   const int PY = parentY_;
 
   if (outBuf_.capacity() < kFlushThreshold_) outBuf_.reserve(kFlushThreshold_);
 
-  Strategy::StreamRLEXY strat(X, Y, Z, PX, PY, *labelTable_);
+  Strategy::StreamRLEXY strat(X, Y, 0, PX, PY, *labelTable_);
   std::vector<Model::BlockDesc> blocks;
   blocks.reserve(1024);
 
   std::string row;
-  for (int z = 0; z < Z; ++z) {
+  int z = 0;
+
+  // Read until EOF (supports infinite streams!)
+  while (true) {
+    // Process one slice (Y rows)
+    bool sliceComplete = true;
     for (int y = 0; y < Y; ++y) {
       if (!std::getline(*in_, row)) {
-        throw std::runtime_error("Unexpected EOF while reading model slice");
+        // EOF encountered - this is expected for infinite streams
+        sliceComplete = false;
+        break;
       }
       if (!row.empty() && row.back() == '\r') row.pop_back();
       if ((int)row.size() < X) {
@@ -250,17 +289,29 @@ void Endpoint::emitRLEXY() {
       strat.onRow(z, y, row, blocks);
       if (!blocks.empty()) write(blocks);
     }
-    // Optional blank line between slices — consume if present
-    if (z < Z - 1) {
-      int ch = in_->peek();
-      if (ch == '\n' || ch == '\r') {
-        std::string blank;
-        std::getline(*in_, blank);
-      }
+
+    if (!sliceComplete) {
+      // EOF reached mid-slice or after complete slice
+      break;
     }
+
+    // Slice complete - flush it
     blocks.clear();
     strat.onSliceEnd(z, blocks);
     if (!blocks.empty()) write(blocks);
+
+    // Optional blank line between slices — consume if present
+    int ch = in_->peek();
+    if (ch == '\n' || ch == '\r') {
+      std::string blank;
+      std::getline(*in_, blank);
+    } else if (ch == EOF || ch == -1) {
+      // No more data
+      break;
+    }
+
+    ++z;  // Move to next slice
   }
+
   flushOut();
 }

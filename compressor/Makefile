@@ -32,10 +32,17 @@ $(BUILDBIN): $(SRC) $(BUILDSRC) | bin
 	$(CXX) $(CXXFLAGS) -o $@ $(SRC) $(BUILDSRC)
 
 $(BUILDEXEMAC): $(SRC) $(BUILDSRC) | bin
-	$(CXX) $(CXXFLAGS) -o $@ $(SRC) $(BUILDSRC)
+	$(WINXX) $(WINXXFLAGS) $(SRC) $(BUILDSRC) $(WINLDFLAGS) -o $@ 
 
 $(BUILDEXE): $(SRC) $(BUILDSRC) | bin
-	$(WINXX) $(WINXXFLAGS) -o $@ $(SRC) $(BUILDSRC) $(WINLDFLAGS)
+	$(CXX) $(CXXFLAGS) $(SRC) $(BUILDSRC) $(WINLDFLAGS) -o $@
+
+build-windows: bin/compressor_win.exe
+
+bin/compressor_win.exe: $(SRC) $(BUILDSRC) | bin
+	$(WINXX) $(WINXXFLAGS) $(SRC) $(BUILDSRC) $(WINLDFLAGS) -o $@
+
+.PHONY: build-windows
 
 bin:
 	mkdir -p bin
