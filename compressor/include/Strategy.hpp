@@ -54,15 +54,15 @@ class SmartMergeStrat : public GroupingStrategy {
  public:
   std::vector<Model::BlockDesc> cover(const Model::ParentBlock& parent,
                                       uint32_t labelId) override;
- private:
   // Merge adjacent blocks that can be combined into larger rectangles
   static std::vector<Model::BlockDesc> mergeAdjacentBlocks(
       std::vector<Model::BlockDesc> blocks);
 };
 
-// Guillotine Cut Strategy: Advanced rectangle packing with recursive cuts
-// Potentially better than MaxRect for irregular patterns
-class GuillotineStrat : public GroupingStrategy {
+// MaxCuboidStrat — Iterative maximum-volume uniform cuboid extraction
+// Slow but achieves maximum compression by finding globally optimal largest cuboids
+// Use this when compression ratio is more important than speed
+class MaxCuboidStrat : public GroupingStrategy {
  public:
   std::vector<Model::BlockDesc> cover(const Model::ParentBlock& parent,
                                       uint32_t labelId) override;
