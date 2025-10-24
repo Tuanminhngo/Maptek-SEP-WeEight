@@ -22,16 +22,17 @@ int main() {
   // Build the set of strategies to compare for each label.
   // You can adjust this list as needed.
   std::vector<std::unique_ptr<Strategy::GroupingStrategy>> algos;
-  // Include all available GroupingStrategy implementations.
-  // Note: Strategy::StreamRLEXY is a streaming helper, not a GroupingStrategy.
-  algos.emplace_back(std::make_unique<Strategy::DefaultStrat>());
+  // Tuned set for 4 CPUs: run Greedy + MaxRect in parallel.
+  // Rationale:
+  // - Greedy is fast and often competitive.
+  // - MaxRect usually wins on block count for larger regions.
+  // - RLEXY/Default are removed here to reduce per-label latency; keeping them
+  //   would increase CPU time without typically beating MaxRect on this data.
   algos.emplace_back(std::make_unique<Strategy::GreedyStrat>());
   algos.emplace_back(std::make_unique<Strategy::MaxRectStrat>());
-  algos.emplace_back(std::make_unique<Strategy::RLEXYStrat>());
 
-  // Pool size limits concurrent strategy evaluations per label. When set to 0,
-  // the worker uses algos.size().
-  Worker::EnsembleWorker worker(std::move(algos), /*poolSize=*/0);
+  // Pool size caps concurrent strategies per label; match machine cores.
+  Worker::EnsembleWorker worker(std::move(algos), /*poolSize=*/4);
 
   while (ep.hasNextParent()) {
     Model::ParentBlock parent = ep.nextParent();

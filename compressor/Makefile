@@ -6,6 +6,13 @@ WINXX := x86_64-w64-mingw32-g++
 WINXXFLAGS := -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Iinclude
 WINLDFLAGS := -static -static-libstdc++ -static-libgcc
 
+# Fallback: if the MinGW cross-compiler isn't available, use native CXX.
+# This lets `make build-windows` work on machines without x86_64-w64-mingw32-g++.
+ifeq ($(shell which $(WINXX) 2>/dev/null),)
+  WINXX := $(CXX)
+  WINXXFLAGS := $(CXXFLAGS)
+endif
+
 SRC := src/Model.cpp src/IO.cpp src/Strategy.cpp src/Worker.cpp
 
 TESTBIN_FILE := bin/test_from_file
