@@ -361,10 +361,6 @@ std::vector<BlockDesc> MaxRectStrat::cover(const ParentBlock& parent,
   return out;
 }
 
-// ============================================================================
-// Optimal3DStrat: Enhanced MaxRect with better Z-stacking and larger blocks
-// ============================================================================
-
 std::vector<BlockDesc> Optimal3DStrat::cover(const ParentBlock& parent,
                                               uint32_t labelId) {
   std::vector<BlockDesc> out;
@@ -417,10 +413,6 @@ std::vector<BlockDesc> Optimal3DStrat::cover(const ParentBlock& parent,
 
   return out;
 }
-
-// ============================================================================
-// SmartMergeStrat: MaxRect + intelligent post-processing merging
-// ============================================================================
 
 std::vector<BlockDesc> SmartMergeStrat::cover(const ParentBlock& parent,
                                                 uint32_t labelId) {
@@ -554,10 +546,6 @@ std::vector<BlockDesc> SmartMergeStrat::mergeAdjacentBlocks(
 
   return merged;
 }
-
-// ============================================================================
-// MaxCuboidStrat - Maximum compression via iterative largest cuboid extraction
-// ============================================================================
 
 std::vector<BlockDesc> MaxCuboidStrat::cover(const ParentBlock& parent, uint32_t labelId) {
   std::vector<BlockDesc> out;
@@ -701,10 +689,6 @@ std::vector<BlockDesc> MaxCuboidStrat::cover(const ParentBlock& parent, uint32_t
   return out;
 }
 
-// ============================================================================
-// LayeredSliceStrat - Z-first approach grouping identical XY slices
-// ============================================================================
-
 std::vector<BlockDesc> LayeredSliceStrat::cover(const ParentBlock& parent, uint32_t labelId) {
   std::vector<BlockDesc> out;
   const int W = parent.sizeX(), H = parent.sizeY(), D = parent.sizeZ();
@@ -763,10 +747,6 @@ std::vector<BlockDesc> LayeredSliceStrat::cover(const ParentBlock& parent, uint3
 
   return out;
 }
-
-// ============================================================================
-// QuadTreeStrat - Hierarchical recursive quadrant subdivision
-// ============================================================================
 
 std::vector<BlockDesc> QuadTreeStrat::cover(const ParentBlock& parent, uint32_t labelId) {
   std::vector<BlockDesc> out;
@@ -837,10 +817,6 @@ std::vector<BlockDesc> QuadTreeStrat::cover(const ParentBlock& parent, uint32_t 
 
   return out;
 }
-
-// ============================================================================
-// ScanlineStrat - Left-to-right sweep with active rectangles
-// ============================================================================
 
 std::vector<BlockDesc> ScanlineStrat::cover(const ParentBlock& parent, uint32_t labelId) {
   std::vector<BlockDesc> out;
@@ -930,10 +906,6 @@ std::vector<BlockDesc> ScanlineStrat::cover(const ParentBlock& parent, uint32_t 
   return out;
 }
 
-// ============================================================================
-// AdaptiveStrat - Pattern-based strategy selection
-// ============================================================================
-
 std::vector<BlockDesc> AdaptiveStrat::cover(const ParentBlock& parent, uint32_t labelId) {
   const int W = parent.sizeX(), H = parent.sizeY(), D = parent.sizeZ();
 
@@ -988,10 +960,6 @@ std::vector<BlockDesc> AdaptiveStrat::cover(const ParentBlock& parent, uint32_t 
     return strat.cover(parent, labelId);
   }
 }
-
-// ============================================================================
-// StreamRLEXY Implementation - True Line-by-Line Streaming RLE
-// ============================================================================
 
 StreamRLEXY::StreamRLEXY(int X, int Y, int Z, int PX, int PY,
                          const Model::LabelTable& labels)
