@@ -13,7 +13,7 @@ int main() {
     ep.init();
 
     const Model::LabelTable& lt = ep.labels();
-    Strategy::SmartMergeStrat strat;  // SmartMerge: Best compression with practical speed
+    Strategy::Optimal3DStrat strat;  // SmartMerge: Best compression with practical speed
 
     while (ep.hasNextParent()) {
         Model::ParentBlock parent = ep.nextParent();
