@@ -20,6 +20,10 @@ BUILDSRC := src/main.cpp
 BUILDEXEMAC := bin/compressor-mac.exe
 BUILDEXE := bin/compressor-win.exe
 
+# Separate experimental binary using the EnsembleWorker (keeps current flow intact)
+ENSEMBLEBIN := bin/ensemble
+ENSEMBLESRC := src/ensemble_main.cpp
+
 all: $(TESTBIN_FILE) $(TESTBIN_STRAT)
 
 $(TESTBIN_FILE): $(SRC) $(TESTSRC_FILE) | bin
@@ -30,6 +34,9 @@ $(TESTBIN_STRAT): $(SRC) $(TESTSRC_STRAT) | bin
 
 $(BUILDBIN): $(SRC) $(BUILDSRC) | bin
 	$(CXX) $(CXXFLAGS) -o $@ $(SRC) $(BUILDSRC)
+
+$(ENSEMBLEBIN): $(SRC) src/Worker.cpp $(ENSEMBLESRC) | bin
+	$(CXX) $(CXXFLAGS) -o $@ $(SRC) src/Worker.cpp $(ENSEMBLESRC)
 
 $(BUILDEXEMAC): $(SRC) $(BUILDSRC) | bin
 	$(WINXX) $(WINXXFLAGS) $(SRC) $(BUILDSRC) $(WINLDFLAGS) -o $@ 
@@ -59,6 +66,9 @@ test-strategy: $(TESTBIN_STRAT)
 
 run: $(BUILDBIN) 
 	cat tests/input.txt | $(BUILDBIN) > tests/output.txt
+
+run-ensemble: $(ENSEMBLEBIN)
+	cat tests/input.txt | $(ENSEMBLEBIN) > tests/output_ensemble.txt
 
 build-exe: $(BUILDEXE)
 
