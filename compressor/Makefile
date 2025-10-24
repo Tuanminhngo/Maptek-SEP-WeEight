@@ -6,7 +6,7 @@ WINXX := x86_64-w64-mingw32-g++
 WINXXFLAGS := -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Iinclude
 WINLDFLAGS := -static -static-libstdc++ -static-libgcc
 
-SRC := src/Model.cpp src/IO.cpp src/Strategy.cpp
+SRC := src/Model.cpp src/IO.cpp src/Strategy.cpp src/Worker.cpp
 
 TESTBIN_FILE := bin/test_from_file
 TESTSRC_FILE := tests/test_from_file.cpp
