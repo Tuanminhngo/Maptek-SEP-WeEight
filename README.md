@@ -2,7 +2,7 @@
 
 High-performance 3D geological block model compression system for the Maptek Software Engineering Project competition. Achieves **98.59% compression ratio** (71.06x) using an optimized ensemble of compression algorithms.
 
-## 🏆 Competition Results
+## Competition Results
 
 - **Compression Rate**: 99.1715% on competition dataset
 
