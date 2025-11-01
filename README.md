@@ -165,10 +165,10 @@ make clean && make build-exe-mac
 
 Detailed documentation available:
 
-- **[ALGORITHM_COMPARISON.md](docs/ALGORITHM_COMPARISON.md)** - Complete benchmark analysis and recommendations
-- **[benchmark_results.md](docs/benchmark_results.md)** - Raw benchmark data
-- **[class_diagram.png](docs/class_diagram.png)** - Class Diagram
-- **[sequence_prototype.png](docs/sequence_prototype.png)** - Sequence Diagram
+- **[ALGORITHM_COMPARISON.md](compressor/docs/ALGORITHM_COMPARISON.md)** - Complete benchmark analysis and recommendations
+- **[benchmark_results.md](compressor/docs/benchmark_results.md)** - Raw benchmark data
+- **[class_diagram.png](compressor/docs/class_diagram.png)** - Class Diagram
+- **[sequence_prototype.png](compressor/docs/sequence_prototype.png)** - Sequence Diagram
 
 
 ## Algorithm Details
