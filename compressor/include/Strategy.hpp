@@ -68,6 +68,38 @@ class MaxCuboidStrat : public GroupingStrategy {
                                       uint32_t labelId) override;
 };
 
+// LayeredSliceStrat — Z-first approach that groups identical XY slices
+// Best for datasets with many repeated Z-layers (geological layers, building floors)
+class LayeredSliceStrat : public GroupingStrategy {
+ public:
+  std::vector<Model::BlockDesc> cover(const Model::ParentBlock& parent,
+                                      uint32_t labelId) override;
+};
+
+// QuadTreeStrat — Hierarchical recursive quadrant subdivision
+// Best for datasets with large uniform regions at different scales
+class QuadTreeStrat : public GroupingStrategy {
+ public:
+  std::vector<Model::BlockDesc> cover(const Model::ParentBlock& parent,
+                                      uint32_t labelId) override;
+};
+
+// ScanlineStrat — Left-to-right sweep with active rectangles
+// Best for datasets with Manhattan-like structures (orthogonal boundaries)
+class ScanlineStrat : public GroupingStrategy {
+ public:
+  std::vector<Model::BlockDesc> cover(const Model::ParentBlock& parent,
+                                      uint32_t labelId) override;
+};
+
+// AdaptiveStrat — Analyzes data characteristics and picks best strategy per region
+// Best for mixed/heterogeneous datasets
+class AdaptiveStrat : public GroupingStrategy {
+ public:
+  std::vector<Model::BlockDesc> cover(const Model::ParentBlock& parent,
+                                      uint32_t labelId) override;
+};
+
 // Streaming strategy for fast RLE along X and vertical merge within
 // parent-Y boundaries. Consumed by IO's streaming reader.
 class StreamRLEXY {

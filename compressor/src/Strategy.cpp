@@ -1,4 +1,5 @@
 #include "../include/Strategy.hpp"
+#include <functional>
 
 using Model::BlockDesc;
 using Model::ParentBlock;
@@ -360,10 +361,6 @@ std::vector<BlockDesc> MaxRectStrat::cover(const ParentBlock& parent,
   return out;
 }
 
-// ============================================================================
-// Optimal3DStrat: Enhanced MaxRect with better Z-stacking and larger blocks
-// ============================================================================
-
 std::vector<BlockDesc> Optimal3DStrat::cover(const ParentBlock& parent,
                                               uint32_t labelId) {
   std::vector<BlockDesc> out;
@@ -417,37 +414,52 @@ std::vector<BlockDesc> Optimal3DStrat::cover(const ParentBlock& parent,
   return out;
 }
 
-// ============================================================================
-// SmartMergeStrat: MaxRect + intelligent post-processing merging
-// ============================================================================
-
 std::vector<BlockDesc> SmartMergeStrat::cover(const ParentBlock& parent,
                                                 uint32_t labelId) {
-  // SmartMergeStrat: Try multiple approaches and pick the best
+  // SmartMergeStrat: Try top 5 most promising strategies and pick the best
+  // Optimized to balance compression quality with speed
 
-  // Approach 1: MaxRect (best for large uniform regions)
+  // Approach 1: Optimal3D (enhanced Z-stacking) - Usually wins
+  Optimal3DStrat optimal3d;
+  std::vector<BlockDesc> optimal3dBlocks = optimal3d.cover(parent, labelId);
+
+  // Approach 2: LayeredSlice (Z-first for layered data)
+  LayeredSliceStrat layered;
+  std::vector<BlockDesc> layeredBlocks = layered.cover(parent, labelId);
+
+  // Approach 3: MaxRect (best for large uniform regions)
   MaxRectStrat maxRect;
   std::vector<BlockDesc> maxRectBlocks = maxRect.cover(parent, labelId);
 
-  // Approach 2: Greedy with Z-stacking enhancement
+  // Approach 4: Greedy (fast fallback)
   GreedyStrat greedy;
   std::vector<BlockDesc> greedyBlocks = greedy.cover(parent, labelId);
 
-  // Approach 3: RLE-XY (best for layered/horizontal patterns)
-  RLEXYStrat rlexy;
-  std::vector<BlockDesc> rlexyBlocks = rlexy.cover(parent, labelId);
+  // Approach 5: Scanline (good for Manhattan structures)
+  ScanlineStrat scanline;
+  std::vector<BlockDesc> scanlineBlocks = scanline.cover(parent, labelId);
 
   // Pick the approach with fewest blocks (best compression)
-  size_t minBlocks = maxRectBlocks.size();
-  std::vector<BlockDesc> best = std::move(maxRectBlocks);
+  size_t minBlocks = optimal3dBlocks.size();
+  std::vector<BlockDesc> best = std::move(optimal3dBlocks);
+
+  if (layeredBlocks.size() < minBlocks) {
+    minBlocks = layeredBlocks.size();
+    best = std::move(layeredBlocks);
+  }
+
+  if (maxRectBlocks.size() < minBlocks) {
+    minBlocks = maxRectBlocks.size();
+    best = std::move(maxRectBlocks);
+  }
 
   if (greedyBlocks.size() < minBlocks) {
     minBlocks = greedyBlocks.size();
     best = std::move(greedyBlocks);
   }
 
-  if (rlexyBlocks.size() < minBlocks) {
-    best = std::move(rlexyBlocks);
+  if (scanlineBlocks.size() < minBlocks) {
+    best = std::move(scanlineBlocks);
   }
 
   return best;
@@ -534,10 +546,6 @@ std::vector<BlockDesc> SmartMergeStrat::mergeAdjacentBlocks(
 
   return merged;
 }
-
-// ============================================================================
-// MaxCuboidStrat - Maximum compression via iterative largest cuboid extraction
-// ============================================================================
 
 std::vector<BlockDesc> MaxCuboidStrat::cover(const ParentBlock& parent, uint32_t labelId) {
   std::vector<BlockDesc> out;
@@ -681,9 +689,277 @@ std::vector<BlockDesc> MaxCuboidStrat::cover(const ParentBlock& parent, uint32_t
   return out;
 }
 
-// ============================================================================
-// StreamRLEXY Implementation - True Line-by-Line Streaming RLE
-// ============================================================================
+std::vector<BlockDesc> LayeredSliceStrat::cover(const ParentBlock& parent, uint32_t labelId) {
+  std::vector<BlockDesc> out;
+  const int W = parent.sizeX(), H = parent.sizeY(), D = parent.sizeZ();
+  const int ox = parent.originX(), oy = parent.originY(), oz = parent.originZ();
+
+  if (W <= 0 || H <= 0 || D <= 0) return out;
+
+  // Build hash for each Z-slice
+  std::vector<size_t> sliceHashes(D);
+  auto buildSliceHash = [&](int z) -> size_t {
+    size_t hash = 0;
+    for (int y = 0; y < H; ++y) {
+      for (int x = 0; x < W; ++x) {
+        if (parent.grid().at(x, y, z) == labelId) {
+          hash ^= std::hash<int>{}(x + y * W + z * W * H) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+        }
+      }
+    }
+    return hash;
+  };
+
+  for (int z = 0; z < D; ++z) {
+    sliceHashes[z] = buildSliceHash(z);
+  }
+
+  // Group consecutive slices with same hash (likely identical)
+  int z = 0;
+  while (z < D) {
+    int startZ = z;
+    size_t currentHash = sliceHashes[z];
+
+    // Find run of identical slices
+    while (z < D && sliceHashes[z] == currentHash) {
+      ++z;
+    }
+    int depth = z - startZ;
+
+    // For this slice pattern, decompose using MaxRect once
+    std::vector<uint8_t> mask(W * H, 0);
+    for (int y = 0; y < H; ++y) {
+      for (int x = 0; x < W; ++x) {
+        if (parent.grid().at(x, y, startZ) == labelId) {
+          mask[y * W + x] = 1;
+        }
+      }
+    }
+
+    // Get 2D rectangles for this slice
+    std::vector<Rect2D> rects = coverSliceWithMaxRects(std::move(mask), W, H);
+
+    // Emit each rectangle with the appropriate Z-depth
+    for (const auto& r : rects) {
+      out.push_back(BlockDesc{ox + r.x, oy + r.y, oz + startZ, r.w, r.h, depth, labelId});
+    }
+  }
+
+  return out;
+}
+
+std::vector<BlockDesc> QuadTreeStrat::cover(const ParentBlock& parent, uint32_t labelId) {
+  std::vector<BlockDesc> out;
+  const int W = parent.sizeX(), H = parent.sizeY(), D = parent.sizeZ();
+  const int ox = parent.originX(), oy = parent.originY(), oz = parent.originZ();
+
+  if (W <= 0 || H <= 0 || D <= 0) return out;
+
+  // Process each Z-slice with quadtree decomposition
+  for (int z = 0; z < D; ++z) {
+    std::function<void(int, int, int, int)> quadtreeDecompose;
+    quadtreeDecompose = [&](int x0, int y0, int w, int h) {
+      if (w <= 0 || h <= 0) return;
+
+      // Check if entire region is uniform
+      bool allMatch = true;
+      bool anyMatch = false;
+      for (int y = y0; y < y0 + h && allMatch; ++y) {
+        for (int x = x0; x < x0 + w && allMatch; ++x) {
+          bool matches = (parent.grid().at(x, y, z) == labelId);
+          if (matches) anyMatch = true;
+          if (y == y0 && x == x0) {
+            // First cell sets the expectation
+          } else {
+            if (matches != (parent.grid().at(x0, y0, z) == labelId)) {
+              allMatch = false;
+            }
+          }
+        }
+      }
+
+      if (allMatch && anyMatch) {
+        // Entire region is this label - emit single block
+        out.push_back(BlockDesc{ox + x0, oy + y0, oz + z, w, h, 1, labelId});
+      } else if (anyMatch) {
+        // Mixed region - subdivide into quadrants
+        int hw = w / 2;
+        int hh = h / 2;
+
+        if (hw > 0 && hh > 0) {
+          quadtreeDecompose(x0, y0, hw, hh);              // Top-left
+          quadtreeDecompose(x0 + hw, y0, w - hw, hh);     // Top-right
+          quadtreeDecompose(x0, y0 + hh, hw, h - hh);     // Bottom-left
+          quadtreeDecompose(x0 + hw, y0 + hh, w - hw, h - hh); // Bottom-right
+        } else {
+          // Can't subdivide further - use greedy row-by-row
+          for (int y = y0; y < y0 + h; ++y) {
+            int x = x0;
+            while (x < x0 + w) {
+              if (parent.grid().at(x, y, z) == labelId) {
+                int runStart = x;
+                while (x < x0 + w && parent.grid().at(x, y, z) == labelId) ++x;
+                out.push_back(BlockDesc{ox + runStart, oy + y, oz + z, x - runStart, 1, 1, labelId});
+              } else {
+                ++x;
+              }
+            }
+          }
+        }
+      }
+    };
+
+    quadtreeDecompose(0, 0, W, H);
+  }
+
+  // Try to stack identical rectangles in Z
+  out = SmartMergeStrat::mergeAdjacentBlocks(std::move(out));
+
+  return out;
+}
+
+std::vector<BlockDesc> ScanlineStrat::cover(const ParentBlock& parent, uint32_t labelId) {
+  std::vector<BlockDesc> out;
+  const int W = parent.sizeX(), H = parent.sizeY(), D = parent.sizeZ();
+  const int ox = parent.originX(), oy = parent.originY(), oz = parent.originZ();
+
+  if (W <= 0 || H <= 0 || D <= 0) return out;
+
+  // Process each Z-slice with scanline
+  for (int z = 0; z < D; ++z) {
+    // Build vertical runs for each column
+    std::vector<std::vector<std::pair<int, int>>> columnRuns(W);
+
+    for (int x = 0; x < W; ++x) {
+      int y = 0;
+      while (y < H) {
+        while (y < H && parent.grid().at(x, y, z) != labelId) ++y;
+        if (y >= H) break;
+        int startY = y;
+        while (y < H && parent.grid().at(x, y, z) == labelId) ++y;
+        columnRuns[x].push_back({startY, y - startY});
+      }
+    }
+
+    // Sweep left to right, merging compatible vertical segments
+    std::vector<std::tuple<int, int, int, int>> activeRects; // {x0, y0, width, height}
+
+    for (int x = 0; x < W; ++x) {
+      std::vector<std::tuple<int, int, int, int>> nextRects;
+
+      for (const auto& run : columnRuns[x]) {
+        int y0 = run.first;
+        int height = run.second;
+
+        // Try to extend existing rectangle
+        bool extended = false;
+        for (auto& rect : activeRects) {
+          int rx0 = std::get<0>(rect);
+          int ry0 = std::get<1>(rect);
+          int rw = std::get<2>(rect);
+          int rh = std::get<3>(rect);
+
+          if (ry0 == y0 && rh == height && rx0 + rw == x) {
+            // Can extend this rectangle
+            std::get<2>(rect) = rw + 1;
+            nextRects.push_back(rect);
+            extended = true;
+            break;
+          }
+        }
+
+        if (!extended) {
+          // Start new rectangle
+          nextRects.push_back({x, y0, 1, height});
+        }
+      }
+
+      // Emit rectangles that weren't extended
+      for (const auto& rect : activeRects) {
+        bool found = false;
+        for (const auto& next : nextRects) {
+          if (std::get<0>(rect) == std::get<0>(next) &&
+              std::get<1>(rect) == std::get<1>(next)) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          out.push_back(BlockDesc{ox + std::get<0>(rect), oy + std::get<1>(rect), oz + z,
+                                 std::get<2>(rect), std::get<3>(rect), 1, labelId});
+        }
+      }
+
+      activeRects = std::move(nextRects);
+    }
+
+    // Emit remaining active rectangles
+    for (const auto& rect : activeRects) {
+      out.push_back(BlockDesc{ox + std::get<0>(rect), oy + std::get<1>(rect), oz + z,
+                             std::get<2>(rect), std::get<3>(rect), 1, labelId});
+    }
+  }
+
+  // Stack in Z
+  out = SmartMergeStrat::mergeAdjacentBlocks(std::move(out));
+
+  return out;
+}
+
+std::vector<BlockDesc> AdaptiveStrat::cover(const ParentBlock& parent, uint32_t labelId) {
+  const int W = parent.sizeX(), H = parent.sizeY(), D = parent.sizeZ();
+
+  if (W <= 0 || H <= 0 || D <= 0) {
+    return std::vector<BlockDesc>();
+  }
+
+  // Analyze data characteristics
+  int totalCells = 0;
+  int labelCells = 0;
+  double zCorrelation = 0.0;
+
+  for (int z = 0; z < D; ++z) {
+    for (int y = 0; y < H; ++y) {
+      for (int x = 0; x < W; ++x) {
+        ++totalCells;
+        if (parent.grid().at(x, y, z) == labelId) {
+          ++labelCells;
+
+          // Check Z-correlation (similarity to next slice)
+          if (z < D - 1 && parent.grid().at(x, y, z + 1) == labelId) {
+            zCorrelation += 1.0;
+          }
+        }
+      }
+    }
+  }
+
+  if (labelCells == 0) {
+    return std::vector<BlockDesc>();
+  }
+
+  double density = static_cast<double>(labelCells) / totalCells;
+  zCorrelation /= labelCells; // Normalize
+
+  // Decision tree for strategy selection
+  if (zCorrelation > 0.8) {
+    // High Z-correlation → use LayeredSlice
+    LayeredSliceStrat strat;
+    return strat.cover(parent, labelId);
+  } else if (density > 0.5) {
+    // High density → use MaxRect
+    MaxRectStrat strat;
+    return strat.cover(parent, labelId);
+  } else if (density > 0.2) {
+    // Medium density → use QuadTree
+    QuadTreeStrat strat;
+    return strat.cover(parent, labelId);
+  } else {
+    // Low density/complex → use Greedy (fast)
+    GreedyStrat strat;
+    return strat.cover(parent, labelId);
+  }
+}
 
 StreamRLEXY::StreamRLEXY(int X, int Y, int Z, int PX, int PY,
                          const Model::LabelTable& labels)
